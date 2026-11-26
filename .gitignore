@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.sqlite*
+*.db
+*.onnx
+.env
+.env.*
+data/
+cache/
+photos/
+exports/
