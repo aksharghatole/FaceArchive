@@ -81,7 +81,9 @@ class Library:
             AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)
         """)
 
-    def photos(self, before, limit, folder=None, person=None):
+    def photos(self, before, limit, folder=None, person=None, *, also_person=None):
+        if person is None:
+            person, also_person = also_person, None
         if person is None:
             conditions = ["p.id < ?"] if before is not None else []
             args = [before] if before is not None else []
@@ -101,6 +103,12 @@ class Library:
                     "EXISTS (SELECT 1 FROM photos p WHERE p.id = f.photo_id AND p.folder_id = ?)"
                 )
                 args.append(folder)
+            if also_person is not None and also_person != person:
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM faces other "
+                    "WHERE other.person_id = ? AND other.photo_id = f.photo_id)"
+                )
+                args.append(also_person)
             query = (
                 "SELECT p.* FROM (SELECT DISTINCT f.photo_id FROM faces f WHERE "
                 + " AND ".join(conditions)

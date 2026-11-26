@@ -1,3 +1,4 @@
+import numpy as np
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPlainTextEdit, QPushButton
 
@@ -108,3 +109,38 @@ def test_scan_explains_missing_models_and_bad_photo(tmp_path, monkeypatch):
     assert "broken.jpg" in shown_reports[0]
     assert "face_detection_yunet_2023mar.onnx" in shown_reports[0]
     window.close()
+
+
+def test_two_person_filter_intersects_albums(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "vacaciones-夏"
+    source.mkdir()
+    library.add_folder(source)
+    write_photo(source / "group-été.png", "red")
+    write_photo(source / "solo.png", "blue")
+
+    class TwoPeople(SyntheticEngine):
+        def detect_image(self, image):
+            face = super().detect_image(image)[0]
+            if image.getpixel((0, 0))[0] == 0:
+                return [face]
+            other = np.zeros(128, dtype="<f4")
+            other[1] = 1
+            return [face, ((0.6, 0.2, 0.3, 0.4), other)]
+
+    assert run_scan(library, TwoPeople()) == (2, 2, 0)
+    first, second = (row["id"] for row in library.people())
+    window = Window(library)
+    assert not window.also_people.isEnabled()
+    window.people.setCurrentIndex(window.people.findData(first))
+    assert window.grid.count() == 2
+    window.also_people.setCurrentIndex(window.also_people.findData(second))
+    assert window.grid.count() == 1
+    assert window.grid.item(0).text() == "group-été.png"
+    window.people.setCurrentIndex(0)
+    assert window.also_people.currentData() is None
+    assert window.grid.count() == 2
+    window.close()
+    app.processEvents()

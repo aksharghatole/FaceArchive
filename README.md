@@ -13,7 +13,7 @@ py -3.12 -m venv .venv
 ```
 
 1. Choose **Add folder** to index a folder and its subfolders. Use **Scan** after adding, changing, or deleting files on disk. Open **Scan details** to inspect file and model errors from the most recent scan. If model initialization fails, the scan still indexes photos and reports that recognition was unavailable.
-2. Filter by folder or person and use **Next page** to browse. Double-click a thumbnail to view the original at screen size.
+2. Filter by folder or person and use **Next page** to browse. With a person selected, use **Also contains…** to find photos that include a second person. Double-click a thumbnail to view the original at screen size.
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
@@ -49,3 +49,5 @@ Scan details stay in memory for the current session and show up to 100 issues pe
 The real-model smoke test exercises both models with generated images. To run it locally, set `FACEARCHIVE_TEST_MODELS` to the directory produced by the fetch script. Without that setting, pytest skips the model smoke test.
 
 The Windows GitHub Actions workflow installs dependencies, runs lint and tests with the checked ONNX models, and builds a PyInstaller one-folder distribution. Extract the complete **FaceArchive-Windows-x64** artifact before opening `FaceArchive.exe`. The executable is unsigned.
+
+See the [architecture notes](docs/architecture.md) and [changelog](CHANGELOG.md).
