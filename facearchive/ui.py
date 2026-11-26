@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from facearchive.duplicates import find_duplicates
 from facearchive.library import Library
 from facearchive.scanner import open_scaled, scan
 
@@ -42,12 +43,14 @@ BUNDLED_MODELS = Path(__file__).resolve().parent / "models"
 
 class ScanThread(QThread):
     update = Signal(int, int, int)
+    duplicate_update = Signal(int)
     result = Signal(str, object, int)
 
-    def __init__(self, library, recognize, parent):
+    def __init__(self, library, recognize, parent, *, duplicates=False):
         super().__init__(parent)
         self.library = library
         self.recognize = recognize
+        self.duplicates = duplicates
         self.cancelled = Event()
 
     def run(self):
@@ -79,8 +82,18 @@ class ScanThread(QThread):
                 engine,
                 report_issue=report_issue,
             )
+            hashed = None
+            if self.duplicates and not self.cancelled.is_set():
+                before = issue_count
+                self.duplicate_update.emit(0)
+                hashed = find_duplicates(
+                    self.library, self.cancelled.is_set, self.duplicate_update.emit, report_issue
+                )
+                errors += issue_count - before
             status = "Stopped" if self.cancelled.is_set() else "Scan finished"
             message = f"{status} · {visited} visited · {indexed} updated · {errors} file errors"
+            if hashed is not None:
+                message += f" · {hashed} files hashed"
             if self.recognize and engine is None:
                 message += " · Face recognition unavailable"
         except Exception as error:
@@ -115,6 +128,8 @@ class Window(QMainWindow):
         self.stop.setEnabled(False)
         self.recognize = QCheckBox("Recognize faces")
         toolbar.addWidget(self.recognize)
+        self.find_copies = QCheckBox("Find exact duplicates")
+        toolbar.addWidget(self.find_copies)
         self.button(toolbar, "Model folder", self.show_models)
         filters = QHBoxLayout()
         layout.addLayout(filters)
@@ -140,6 +155,9 @@ class Window(QMainWindow):
         self.button(paging, "First page", self.refresh_grid)
         self.previous_page = self.button(paging, "Previous page", self.go_back)
         self.next_page = self.button(paging, "Next page", self.go_forward)
+        self.only_copies = QCheckBox("Show duplicates only")
+        self.only_copies.toggled.connect(self.refresh_grid)
+        paging.addWidget(self.only_copies)
         self.folders.currentIndexChanged.connect(self.refresh_grid)
         self.people.currentIndexChanged.connect(self.refresh_grid)
         self.also_people.currentIndexChanged.connect(self.refresh_grid)
@@ -204,6 +222,7 @@ class Window(QMainWindow):
             folder,
             person,
             also_person=self.also_people.currentData(),
+            duplicates=self.only_copies.isChecked(),
         )
         self.grid.clear()
         for photo in photos[:PAGE_SIZE]:
@@ -248,7 +267,10 @@ class Window(QMainWindow):
     def start_scan(self):
         if self.worker is not None:
             return
-        self.worker = ScanThread(self.library, self.recognize.isChecked(), self)
+        self.worker = ScanThread(
+            self.library, self.recognize.isChecked(), self, duplicates=self.find_copies.isChecked()
+        )
+        self.worker.duplicate_update.connect(self.show_hash_progress)
         self.worker.update.connect(self.show_progress)
         self.worker.result.connect(self.show_result)
         self.worker.finished.connect(self.scan_finished)
@@ -278,6 +300,9 @@ class Window(QMainWindow):
         layout.addWidget(report)
         self.button(layout, "Close", dialog.accept)
         dialog.exec()
+
+    def show_hash_progress(self, hashed):
+        self.statusBar().showMessage(f"Finding exact duplicates · {hashed} files hashed")
 
     def show_progress(self, visited, indexed, errors):
         self.statusBar().showMessage(f"{visited} visited · {indexed} updated · {errors} errors")
@@ -340,6 +365,9 @@ class Window(QMainWindow):
         except (OSError, ValueError, Image.DecompressionBombError) as error:
             preview.setText(f"Cannot open photo · {error}")
         layout.addWidget(preview)
+        copies = self.library.exact_copies(photo, 51)
+        if copies:
+            self.button(layout, "Show exact copies", lambda: self.show_exact_copies(copies, dialog))
         faces = QComboBox()
         layout.addWidget(faces)
         actions = QHBoxLayout()
@@ -412,6 +440,20 @@ class Window(QMainWindow):
         ):
             button = self.button(actions, label, lambda checked=False, action=action: edit(action))
             button.setEnabled(self.worker is None and faces.count() > 0)
+        dialog.exec()
+
+    def show_exact_copies(self, copies, parent):
+        dialog = QDialog(parent)
+        dialog.setWindowTitle("Exact copies")
+        dialog.resize(690, 360)
+        layout = QVBoxLayout(dialog)
+        paths = "\n".join(row["path"] for row in copies[:50])
+        if len(copies) > 50:
+            paths += "\nAdditional copies are listed in the duplicate gallery."
+        report = QPlainTextEdit(paths)
+        report.setReadOnly(True)
+        layout.addWidget(report)
+        self.button(layout, "Close", dialog.accept)
         dialog.exec()
 
     def closeEvent(self, event):

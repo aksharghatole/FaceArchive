@@ -29,6 +29,20 @@ CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id, photo_id);
 PRAGMA user_version = 1;
 """
 
+DUPLICATE_MIGRATION = """
+ALTER TABLE photos ADD COLUMN content_hash BLOB;
+CREATE INDEX photos_size ON photos(size);
+CREATE INDEX photos_content_hash ON photos(content_hash, size) WHERE content_hash IS NOT NULL;
+PRAGMA user_version = 2;
+"""
+
+DUPLICATE_FILTER = """
+p.content_hash IS NOT NULL AND EXISTS (
+    SELECT 1 FROM photos copy WHERE copy.content_hash = p.content_hash
+    AND copy.size = p.size AND copy.id != p.id
+)
+"""
+
 
 class Library:
     def __init__(self, directory: Path):
@@ -39,10 +53,11 @@ class Library:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version == 0:
-                db.executescript("BEGIN;\n" + SCHEMA + "\nCOMMIT;")
-            elif version != 1:
+            if version not in (0, 1, 2):
                 raise RuntimeError(f"Unsupported library version {version}")
+            migrations = (SCHEMA, DUPLICATE_MIGRATION)[version:]
+            if migrations:
+                db.executescript("BEGIN;\n" + "\n".join(migrations) + "\nCOMMIT;")
 
     @contextmanager
     def connect(self):
@@ -81,7 +96,9 @@ class Library:
             AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)
         """)
 
-    def photos(self, before, limit, folder=None, person=None, *, also_person=None):
+    def photos(
+        self, before, limit, folder=None, person=None, *, also_person=None, duplicates=False
+    ):
         if person is None:
             person, also_person = also_person, None
         if person is None:
@@ -90,6 +107,8 @@ class Library:
             if folder is not None:
                 conditions.append("p.folder_id = ?")
                 args.append(folder)
+            if duplicates:
+                conditions.append(DUPLICATE_FILTER)
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
             query = "SELECT p.* FROM photos p" + where + " ORDER BY p.id DESC LIMIT ?"
         else:
@@ -98,11 +117,16 @@ class Library:
             if before is not None:
                 conditions.append("f.photo_id < ?")
                 args.append(before)
+            photo_conditions = ["p.id = f.photo_id"]
             if folder is not None:
-                conditions.append(
-                    "EXISTS (SELECT 1 FROM photos p WHERE p.id = f.photo_id AND p.folder_id = ?)"
-                )
+                photo_conditions.append("p.folder_id = ?")
                 args.append(folder)
+            if duplicates:
+                photo_conditions.append(DUPLICATE_FILTER)
+            if folder is not None or duplicates:
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM photos p WHERE " + " AND ".join(photo_conditions) + ")"
+                )
             if also_person is not None and also_person != person:
                 conditions.append(
                     "EXISTS (SELECT 1 FROM faces other "
@@ -117,6 +141,18 @@ class Library:
             )
         with self.connect() as db:
             return db.execute(query, (*args, limit)).fetchall()
+
+    def exact_copies(self, photo, limit):
+        with self.connect() as db:
+            return db.execute(
+                """
+                SELECT copy.path FROM photos p JOIN photos copy
+                ON copy.content_hash = p.content_hash AND copy.size = p.size
+                WHERE p.id = ? AND copy.id != p.id
+                ORDER BY copy.id LIMIT ?
+            """,
+                (photo, limit),
+            ).fetchall()
 
     def people(self):
         with self.connect() as db:

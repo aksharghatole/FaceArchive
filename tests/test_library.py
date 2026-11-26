@@ -1,10 +1,12 @@
 import os
+import sqlite3
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from facearchive.library import Library
+from facearchive.duplicates import find_duplicates
+from facearchive.library import SCHEMA, Library
 from facearchive.recognition import Recognition
 from facearchive.scanner import scan
 
@@ -243,3 +245,52 @@ def test_cancelled_scan_keeps_missing_rows_until_a_complete_scan(archive):
     assert run_scan(library) == (35, 3, 0)
     assert len(library.photos(None, 100)) == 35
     assert all(row["path"] != str(missing) for row in library.photos(None, 100))
+
+
+def write_bmp(path, color, size=(32, 32)):
+    Image.new("RGB", size, color).save(path)
+
+
+def test_existing_database_migrates_without_losing_records(tmp_path):
+    with sqlite3.connect(tmp_path / "library.sqlite3") as db:
+        db.executescript(SCHEMA)
+        db.execute("INSERT INTO folders VALUES (1, 'photos')")
+        db.execute("INSERT INTO photos VALUES (1, 1, 'test.jpg', 7, 8, 'thumbnail', NULL)")
+    library = Library(tmp_path)
+    row = library.photos(None, 1)[0]
+    assert row["path"] == "test.jpg"
+    assert row["content_hash"] is None
+    with library.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_duplicates_filter_caches_hashes_and_invalidates_changed_copies(archive):
+    library, source = archive
+    for name, color in (("a.bmp", "red"), ("b.bmp", "red"), ("different.bmp", "blue")):
+        write_bmp(source / name, color)
+    write_bmp(source / "unique.bmp", "red", (35, 35))
+    assert run_scan(library) == (4, 4, 0)
+    issues = []
+    args = (library, lambda: False, lambda *_: None, lambda *issue: issues.append(issue))
+    assert find_duplicates(*args) == 3
+    assert find_duplicates(*args) == 0
+    assert not issues
+
+    copies = library.photos(None, 20, duplicates=True)
+    assert [row["path"] for row in copies] == [str(source / "b.bmp"), str(source / "a.bmp")]
+    assert library.exact_copies(copies[0]["id"], 10)[0]["path"] == str(source / "a.bmp")
+
+    (source / "b.bmp").write_bytes(b"corrupt")
+    assert run_scan(library) == (4, 0, 1)
+    assert not library.photos(None, 20, duplicates=True)
+
+
+def test_hashing_can_cancel_before_processing_more_paths(archive):
+    library, source = archive
+    for i in range(42):
+        write_bmp(source / f"photo-{i}.bmp", "red")
+    assert run_scan(library) == (42, 42, 0)
+    progress = []
+    assert find_duplicates(library, lambda: bool(progress), progress.append, lambda *_: None) == 32
+    assert find_duplicates(library, lambda: False, progress.append, lambda *_: None) == 10
+    assert len(library.photos(None, 50, duplicates=True)) == 42

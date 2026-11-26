@@ -5,6 +5,7 @@ import os
 import sqlite3
 import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -22,7 +23,8 @@ def ordinary(info):
     )
 
 
-def open_scaled(path, size):
+@contextmanager
+def open_original(path):
     expected = os.lstat(path)
     if not ordinary(expected):
         raise OSError("Photo is no longer an ordinary file")
@@ -32,12 +34,16 @@ def open_scaled(path, size):
         actual = os.fstat(stream.fileno())
         if not ordinary(actual) or not os.path.samestat(expected, actual):
             raise OSError("Photo was replaced while opening")
-        with Image.open(stream) as image:
-            if image.width * image.height > MAX_PIXELS:
-                raise ValueError("Image exceeds the 48-megapixel decoding limit")
-            image.draft("RGB", (size, size))
-            image.thumbnail((size, size))
-            return ImageOps.exif_transpose(image).convert("RGB")
+        yield stream
+
+
+def open_scaled(path, size):
+    with open_original(path) as stream, Image.open(stream) as image:
+        if image.width * image.height > MAX_PIXELS:
+            raise ValueError("Image exceeds the 48-megapixel decoding limit")
+        image.draft("RGB", (size, size))
+        image.thumbnail((size, size))
+        return ImageOps.exif_transpose(image).convert("RGB")
 
 
 def thumbnail_path(library, path, info):
@@ -171,6 +177,8 @@ def clean_cache(library, cancelled, record_issue):
 def index_photo(db, library, folder_id, path, info, engine):
     row = db.execute("SELECT * FROM photos WHERE path = ?", (str(path),)).fetchone()
     changed = row is None or (row["mtime"], row["size"]) != (info.st_mtime_ns, info.st_size)
+    if changed and row is not None and row["content_hash"] is not None:
+        db.execute("UPDATE photos SET content_hash = NULL WHERE id = ?", (row["id"],))
     target = thumbnail_path(library, path, info)
     needs_thumbnail = not target.is_file()
     analyze = engine is not None and (changed or row["face_version"] != engine.version)
