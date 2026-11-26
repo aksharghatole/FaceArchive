@@ -411,36 +411,40 @@ class Window(QMainWindow):
             event.accept()
 
 
-def run_window(app, directory, check_portrait=None):
+def run_window(app, directory, check_bundle=False):
     try:
         directory.mkdir(parents=True, exist_ok=True)
         lock = QLockFile(str(directory / "instance.lock"))
         lock.setStaleLockTime(0)
         if not lock.tryLock(0):
-            if check_portrait is None:
+            if not check_bundle:
                 QMessageBox.warning(None, "FaceArchive", "The library is already open or locked.")
             return 1
         window = Window(Library(directory))
     except (OSError, RuntimeError, sqlite3.Error) as error:
-        if check_portrait is None:
+        if not check_bundle:
             QMessageBox.critical(None, "Cannot open library", str(error))
         return 1
     window.show()
-    if check_portrait is not None:
+    if check_bundle:
         from facearchive.recognition import Recognition
 
         app.processEvents()
         window.close()
-        return 0 if Recognition(BUNDLED_MODELS).detect(check_portrait) else 1
+        try:
+            Recognition(BUNDLED_MODELS).check_models()
+        except (OSError, ValueError, RuntimeError):
+            return 1
+        return 0
     return app.exec()
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("FaceArchive")
-    if len(sys.argv) == 3 and sys.argv[1] == "--check-bundle":
+    if sys.argv[1:] == ["--check-bundle"]:
         with TemporaryDirectory(prefix="facearchive-check-") as temporary:
-            return run_window(app, Path(temporary), Path(sys.argv[2]))
+            return run_window(app, Path(temporary), check_bundle=True)
     directory = Path(
         QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
     )

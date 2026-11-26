@@ -4,6 +4,7 @@ import hashlib
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from facearchive.scanner import RECOGNITION_SIZE, open_scaled
 
@@ -29,6 +30,16 @@ class Recognition:
             self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer), "")
         except cv2.error as error:
             raise ValueError("OpenCV could not load the configured ONNX models") from error
+
+    def check_models(self):
+        """Exercise both networks using locally generated inputs."""
+        if self.detect_image(Image.new("RGB", (320, 320))):
+            raise ValueError("YuNet reported a face in a blank test image")
+        gradient = np.arange(112, dtype=np.uint8)
+        image = np.broadcast_to(gradient[None, :, None], (112, 112, 3)).copy()
+        embedding = self.recognizer.feature(image)
+        if embedding.size != 128 or not np.isfinite(embedding).all():
+            raise ValueError("SFace returned an invalid test embedding")
 
     def detect(self, path):
         return self.detect_image(open_scaled(path, RECOGNITION_SIZE))

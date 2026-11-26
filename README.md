@@ -46,6 +46,6 @@ Scan details stay in memory for the current session and show up to 100 issues pe
 .venv\Scripts\python -m pytest -ra
 ```
 
-The real-model test uses a NASA portrait from scikit-image. To run it locally, call the fetch script with `--test-portrait build/astronaut.png`, then set `FACEARCHIVE_TEST_MODELS` to the model directory and `FACEARCHIVE_TEST_PORTRAIT` to the portrait path. Without the model directory setting the real-model test is skipped. [NASA portrait fixture](https://scikit-image.org/docs/stable/api/skimage.data.html#skimage.data.astronaut)
+The real-model smoke test exercises both models with generated images. To run it locally, set `FACEARCHIVE_TEST_MODELS` to the directory produced by the fetch script. Without that setting, pytest skips the model smoke test.
 
 The Windows GitHub Actions workflow installs dependencies, runs lint and tests with the checked ONNX models, and builds a PyInstaller one-folder distribution. Extract the complete **FaceArchive-Windows-x64** artifact before opening `FaceArchive.exe`. The executable is unsigned.

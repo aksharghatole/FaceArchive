@@ -39,23 +39,7 @@ def main(destination):
         (destination / f"{directory}-LICENSE.txt").write_bytes(license_text)
 
 
-def fetch_test_portrait(destination):
-    url = (
-        "https://raw.githubusercontent.com/scikit-image/scikit-image/"
-        "v0.24.0/skimage/data/astronaut.png"
-    )
-    data = download(url, 1_000_000)
-    expected = "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5"
-    if hashlib.sha256(data).hexdigest() != expected:
-        raise ValueError("SHA-256 mismatch for the NASA test portrait")
-    destination.write_bytes(data)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
-    parser.add_argument("--test-portrait", type=Path)
-    arguments = parser.parse_args()
-    main(arguments.destination)
-    if arguments.test_portrait:
-        fetch_test_portrait(arguments.test_portrait)
+    main(parser.parse_args().destination)
