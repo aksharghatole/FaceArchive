@@ -144,3 +144,27 @@ def test_two_person_filter_intersects_albums(tmp_path, monkeypatch):
     assert window.grid.count() == 2
     window.close()
     app.processEvents()
+
+
+def test_duplicate_scan_and_gallery(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    library.add_folder(source)
+    write_photo(source / "first.png")
+    (source / "copy.png").write_bytes((source / "first.png").read_bytes())
+    (source / "different.png").write_bytes((source / "first.png").read_bytes() + b"padding")
+
+    window = Window(library)
+    window.find_copies.setChecked(True)
+    finish_scan(app, window)
+    assert window.grid.count() == 3
+    window.only_copies.setChecked(True)
+    assert {window.grid.item(i).text() for i in range(window.grid.count())} == {
+        "first.png",
+        "copy.png",
+    }
+    assert "2 files hashed" in window.statusBar().currentMessage()
+    window.close()

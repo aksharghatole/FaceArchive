@@ -17,6 +17,15 @@ py -3.12 -m venv .venv
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
+## Exact duplicates
+
+Enable **Find exact duplicates** before scanning. FaceArchive hashes indexed files
+that share a file size and reuses hashes on later scans. Enable **Show duplicates
+only** to narrow the gallery, then open a photo and choose **Show exact copies**
+to see the other indexed paths. Files with visually similar content but different
+bytes are outside this search. Results reflect the last scan, so rescan after
+external changes. Originals are read-only.
+
 ## Models
 
 The executable built by CI includes both models and their license files. For a source installation, download them on a connected development machine and copy the output to the model folder. The fetch script checks the SHA-256 digest of each ONNX file. The model folder can also be populated from offline media.

@@ -17,6 +17,11 @@ folder traversal removes entries for absent files. Thumbnails are written by ato
 replacement and cleaned separately from original files. Image decoding has a pixel
 limit and checks file identity when opening. Scan diagnostics stay in memory.
 
+Exact-duplicate scanning groups indexed file sizes in SQLite and hashes candidates
+in cancellable chunks. Unchanged paths reuse stored SHA-256 values. The scanner
+clears a stored hash when the indexed file's timestamp or size changes. Duplicate
+queries use a partial index over known hashes and file sizes.
+
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new
 embedding with a representative from each compatible album in bounded batches.
