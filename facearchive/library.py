@@ -1,0 +1,149 @@
+"""Local library storage. Each thread owns its own SQLite connection."""
+
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS folders (
+    id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders ON DELETE CASCADE,
+    path TEXT UNIQUE NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL,
+    thumbnail TEXT NOT NULL, face_version TEXT
+);
+CREATE INDEX IF NOT EXISTS photos_folder ON photos(folder_id);
+CREATE INDEX IF NOT EXISTS photos_thumbnail ON photos(thumbnail);
+CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY, name TEXT
+);
+CREATE TABLE IF NOT EXISTS faces (
+    id INTEGER PRIMARY KEY, photo_id INTEGER NOT NULL REFERENCES photos ON DELETE CASCADE,
+    person_id INTEGER REFERENCES people ON DELETE SET NULL,
+    x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+    embedding BLOB NOT NULL, rejected INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS faces_photo ON faces(photo_id);
+CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id, photo_id);
+PRAGMA user_version = 1;
+"""
+
+
+class Library:
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self.thumbnails = directory / "thumbnails"
+        self.thumbnails.mkdir(parents=True, exist_ok=True)
+        self.database = directory / "library.sqlite3"
+        with self.connect() as db:
+            db.execute("PRAGMA journal_mode = WAL")
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                db.executescript("BEGIN;\n" + SCHEMA + "\nCOMMIT;")
+            elif version != 1:
+                raise RuntimeError(f"Unsupported library version {version}")
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.database, timeout=15)
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys = ON")
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def add_folder(self, path: Path):
+        path = path.resolve(strict=True)
+        if not path.is_dir():
+            raise ValueError("Choose a directory.")
+        data = self.directory.resolve()
+        if data.is_relative_to(path) or path.is_relative_to(data):
+            raise ValueError("Choose a folder outside FaceArchive’s own data tree.")
+        with self.connect() as db:
+            for row in db.execute("SELECT path FROM folders"):
+                existing = Path(row["path"])
+                if path.is_relative_to(existing) or existing.is_relative_to(path):
+                    raise ValueError("This folder overlaps a folder already in the library.")
+            db.execute("INSERT INTO folders(path) VALUES (?)", (str(path),))
+
+    def remove_folder(self, folder_id):
+        with self.connect() as db:
+            db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+            self.prune_people(db)
+
+    @staticmethod
+    def prune_people(db):
+        db.execute("""
+            DELETE FROM people WHERE name IS NULL
+            AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)
+        """)
+
+    def photos(self, before, limit, folder=None, person=None):
+        if person is None:
+            conditions = ["p.id < ?"] if before is not None else []
+            args = [before] if before is not None else []
+            if folder is not None:
+                conditions.append("p.folder_id = ?")
+                args.append(folder)
+            where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            query = "SELECT p.* FROM photos p" + where + " ORDER BY p.id DESC LIMIT ?"
+        else:
+            conditions = ["f.person_id = ?"]
+            args = [person]
+            if before is not None:
+                conditions.append("f.photo_id < ?")
+                args.append(before)
+            if folder is not None:
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM photos p WHERE p.id = f.photo_id AND p.folder_id = ?)"
+                )
+                args.append(folder)
+            query = (
+                "SELECT p.* FROM (SELECT DISTINCT f.photo_id FROM faces f WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY f.photo_id DESC LIMIT ?) album "
+                "JOIN photos p ON p.id = album.photo_id ORDER BY p.id DESC"
+            )
+        with self.connect() as db:
+            return db.execute(query, (*args, limit)).fetchall()
+
+    def people(self):
+        with self.connect() as db:
+            return db.execute("""
+                SELECT p.id, p.name, count(DISTINCT f.photo_id) AS total FROM people p
+                LEFT JOIN faces f ON f.person_id = p.id GROUP BY p.id
+                ORDER BY p.name IS NULL, p.name COLLATE NOCASE, p.id
+            """).fetchall()
+
+    def rename(self, person, name):
+        with self.connect() as db:
+            db.execute("UPDATE people SET name = ? WHERE id = ?", (name.strip() or None, person))
+
+    def merge(self, source, target):
+        if source == target:
+            return
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE people SET name = coalesce(name, (SELECT name FROM people WHERE id = ?))
+                WHERE id = ?
+            """,
+                (source, target),
+            )
+            db.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (target, source))
+            db.execute("DELETE FROM people WHERE id = ?", (source,))
+
+    def correct(self, face, person=None, *, split=False, reject=False):
+        with self.connect() as db:
+            if split:
+                row = db.execute("SELECT id FROM faces WHERE id = ?", (face,)).fetchone()
+                if row is None:
+                    return
+                person = db.execute("INSERT INTO people DEFAULT VALUES").lastrowid
+            db.execute(
+                "UPDATE faces SET person_id = ?, rejected = ? WHERE id = ?", (person, reject, face)
+            )
+            self.prune_people(db)

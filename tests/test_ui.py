@@ -1,0 +1,110 @@
+from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPlainTextEdit, QPushButton
+
+from facearchive import ui
+from facearchive.library import Library
+from facearchive.ui import Window, run_window
+from tests.test_library import SyntheticEngine, run_scan, write_photo
+
+
+def finish_scan(app, window):
+    window.start_scan()
+    loop = QEventLoop()
+    window.worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    app.processEvents()
+    assert window.worker is None
+
+
+def test_background_scan_populates_native_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    write_photo(source / "sample.jpg")
+    library.add_folder(source)
+    window = Window(library)
+    window.show()
+    finish_scan(app, window)
+    assert window.grid.count() == 1
+    assert window.grid.item(0).text() == "sample.jpg"
+    assert "1 updated" in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_face_review_draws_box_and_splits_album(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    for name in ("a.jpg", "b.jpg"):
+        write_photo(source / name)
+    library.add_folder(source)
+    assert run_scan(library, SyntheticEngine()) == (2, 2, 0)
+    window = Window(library)
+
+    def review(dialog):
+        faces = dialog.findChild(QComboBox)
+        assert faces.count() == 1
+        pixmap = dialog.findChild(QLabel).pixmap()
+        assert not pixmap.isNull()
+        border = pixmap.toImage().pixelColor(40, 60)
+        assert border.blue() > 200 and border.green() > 150
+        next(
+            button
+            for button in dialog.findChildren(QPushButton)
+            if button.text() == "Split to new person"
+        ).click()
+
+    monkeypatch.setattr(QDialog, "exec", review)
+    window.open_photo(window.grid.item(0))
+    assert [person["total"] for person in library.people()] == [1, 1]
+    window.close()
+    app.processEvents()
+
+
+def test_startup_initializes_library_and_releases_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(QApplication, "exec", lambda *_: 0)
+    assert run_window(app, tmp_path) == 0
+    assert (tmp_path / "library.sqlite3").is_file()
+    assert not (tmp_path / "instance.lock").exists()
+
+
+def test_scan_explains_missing_models_and_bad_photo(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(ui, "BUNDLED_MODELS", tmp_path / "no-bundle")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    library.add_folder(source)
+    write_photo(source / "valid.jpg")
+    (source / "broken.jpg").write_bytes(b"not an image")
+
+    window = Window(library)
+    window.recognize.setChecked(True)
+    finish_scan(app, window)
+    assert window.grid.count() == 1
+    assert window.grid.item(0).text() == "valid.jpg"
+    assert "Face recognition unavailable" in window.statusBar().currentMessage()
+
+    shown_reports = []
+
+    def read_report(dialog):
+        report = dialog.findChild(QPlainTextEdit)
+        assert report.isReadOnly()
+        shown_reports.append(report.toPlainText())
+
+    assert window.scan_details.isEnabled()
+    monkeypatch.setattr(QDialog, "exec", read_report)
+    window.scan_details.click()
+    assert len(shown_reports) == 1
+    assert "Photo indexing" in shown_reports[0]
+    assert "broken.jpg" in shown_reports[0]
+    assert "face_detection_yunet_2023mar.onnx" in shown_reports[0]
+    window.close()

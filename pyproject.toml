@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facearchive"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.8,<7", "Pillow>=11,<13", "opencv-python-headless>=4.10,<5", "numpy>=2,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1", "pyinstaller>=6.12,<7"]
+
+[project.gui-scripts]
+facearchive = "facearchive.ui:main"
+
+[tool.setuptools.packages.find]
+include = ["facearchive*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

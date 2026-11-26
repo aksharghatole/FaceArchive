@@ -1,0 +1,49 @@
+name: Windows checks and package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      FACEARCHIVE_TEST_MODELS: ${{ github.workspace }}/build/models
+      FACEARCHIVE_TEST_PORTRAIT: ${{ github.workspace }}/build/astronaut.png
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install ".[dev]"
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python scripts/fetch_models.py build/models --test-portrait build/astronaut.png
+      - run: python -m pytest -ra
+      - name: Package
+        run: >
+          python -m PyInstaller --noconfirm --clean --windowed --name FaceArchive
+          --add-data "build/models:facearchive/models" facearchive/__main__.py
+      - name: Smoke test the executable and bundled models
+        run: |
+          $portrait = (Resolve-Path build/astronaut.png).Path
+          $process = Start-Process -FilePath dist/FaceArchive/FaceArchive.exe `
+            -ArgumentList @('--check-bundle', ('"{0}"' -f $portrait)) -PassThru
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            throw "FaceArchive bundle smoke test timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "FaceArchive bundle smoke test failed with exit code $($process.ExitCode)"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FaceArchive-Windows-x64
+          path: dist/FaceArchive/
+          if-no-files-found: error
