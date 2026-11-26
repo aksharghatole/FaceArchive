@@ -24,7 +24,11 @@ jobs:
       - run: python -m ruff check .
       - run: python -m ruff format --check .
       - run: python scripts/fetch_models.py build/models
-      - run: python -m pytest -ra
+      - id: tests
+        run: python -m pytest -ra --junitxml=build/test-results.xml
+      - name: Annotate failed tests
+        if: failure() && steps.tests.outcome == 'failure'
+        run: python scripts/annotate_test_failures.py build/test-results.xml
       - name: Package
         run: >
           python -m PyInstaller --noconfirm --clean --windowed --name FaceArchive

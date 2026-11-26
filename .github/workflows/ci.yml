@@ -31,5 +31,9 @@ jobs:
           QT_DEBUG_PLUGINS: '1'
         run: python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('Qt offscreen startup OK')"
       - run: python -m ruff check .
-      - run: python -m pytest -q
+      - id: tests
+        run: python -m pytest -q --junitxml=build/test-results.xml
         if: ${{ hashFiles('tests/**') != '' }}
+      - name: Annotate failed tests
+        if: failure() && steps.tests.outcome == 'failure'
+        run: python scripts/annotate_test_failures.py build/test-results.xml

@@ -155,7 +155,7 @@ def test_duplicate_scan_and_gallery(tmp_path, monkeypatch):
     library.add_folder(source)
     write_photo(source / "first.png")
     (source / "copy.png").write_bytes((source / "first.png").read_bytes())
-    write_photo(source / "different.png", "green")
+    (source / "different.png").write_bytes((source / "first.png").read_bytes() + b"padding")
 
     window = Window(library)
     window.find_copies.setChecked(True)
