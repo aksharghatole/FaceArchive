@@ -120,8 +120,11 @@ class Window(QMainWindow):
         layout.addLayout(filters)
         self.folders = QComboBox()
         self.people = QComboBox()
+        self.also_people = QComboBox()
+        self.also_people.setAccessibleName("Second person")
         filters.addWidget(self.folders, 1)
         filters.addWidget(self.people, 1)
+        filters.addWidget(self.also_people, 1)
         self.rename_button = self.button(filters, "Name person", self.rename_person)
         self.merge_button = self.button(filters, "Merge person", self.merge_person)
         self.grid = QListWidget()
@@ -139,6 +142,7 @@ class Window(QMainWindow):
         self.next_page = self.button(paging, "Next page", self.go_forward)
         self.folders.currentIndexChanged.connect(self.refresh_grid)
         self.people.currentIndexChanged.connect(self.refresh_grid)
+        self.also_people.currentIndexChanged.connect(self.refresh_grid)
         self.refresh_filters()
 
     @staticmethod
@@ -151,17 +155,14 @@ class Window(QMainWindow):
     def refresh_filters(self):
         with self.library.connect() as db:
             folders = db.execute("SELECT * FROM folders ORDER BY path").fetchall()
-        people = self.library.people()
+        people = [
+            (f"{row['name'] or 'Person ' + str(row['id'])} ({row['total']})", row["id"])
+            for row in self.library.people()
+        ]
         for combo, label, items in (
             (self.folders, "All folders", [(row["path"], row["id"]) for row in folders]),
-            (
-                self.people,
-                "All people",
-                [
-                    (f"{row['name'] or 'Person ' + str(row['id'])} ({row['total']})", row["id"])
-                    for row in people
-                ],
-            ),
+            (self.people, "All people", people),
+            (self.also_people, "Also contains…", people),
         ):
             selected = combo.currentData()
             combo.blockSignals(True)
@@ -192,7 +193,18 @@ class Window(QMainWindow):
         self.remove.setEnabled(folder is not None and self.worker is None)
         self.rename_button.setEnabled(person is not None and self.worker is None)
         self.merge_button.setEnabled(person is not None and self.worker is None)
-        photos = self.library.photos(self.pages[-1], PAGE_SIZE + 1, folder, person)
+        if person is None or person == self.also_people.currentData():
+            self.also_people.blockSignals(True)
+            self.also_people.setCurrentIndex(0)
+            self.also_people.blockSignals(False)
+        self.also_people.setEnabled(person is not None)
+        photos = self.library.photos(
+            self.pages[-1],
+            PAGE_SIZE + 1,
+            folder,
+            person,
+            also_person=self.also_people.currentData(),
+        )
         self.grid.clear()
         for photo in photos[:PAGE_SIZE]:
             path = Path(photo["path"])
