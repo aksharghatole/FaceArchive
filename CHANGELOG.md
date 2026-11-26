@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added month-based timeline browsing with local EXIF dates.
+
 - Added opt-in exact-duplicate scanning and gallery review.
 
 - Added SQLite photo indexing, a cancellable background scanner, read-only photo

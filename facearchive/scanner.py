@@ -10,6 +10,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from facearchive.metadata import capture_day
+
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 THUMBNAIL_SIZE = 256
 RECOGNITION_SIZE = 1280
@@ -196,7 +198,15 @@ def index_photo(db, library, folder_id, path, info, engine):
         if image is None:
             image = open_scaled(path, THUMBNAIL_SIZE)
         write_thumbnail(image, target)
-    if not changed and not analyze:
+    needs_date = changed or row["captured_on"] is None
+    captured_on = None
+    if needs_date:
+        if image is None:
+            with open_original(path) as stream, Image.open(stream) as header:
+                captured_on = capture_day(header, info.st_mtime_ns)
+        else:
+            captured_on = capture_day(image, info.st_mtime_ns)
+    if not changed and not analyze and not needs_date:
         return 0, inference_error
     current = path.lstat()
     if (current.st_mtime_ns, current.st_size, current.st_ino) != (
@@ -205,14 +215,18 @@ def index_photo(db, library, folder_id, path, info, engine):
         info.st_ino,
     ):
         raise OSError("Photo changed while scanning")
+    if not changed and not analyze:
+        db.execute("UPDATE photos SET captured_on = ? WHERE id = ?", (captured_on, row["id"]))
+        return 0, inference_error
     db.execute("SAVEPOINT photo")
     try:
         photo = db.execute(
             """
-            INSERT INTO photos(folder_id, path, mtime, size, thumbnail, face_version)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO photos(folder_id, path, mtime, size, thumbnail, face_version, captured_on)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size,
-                thumbnail=excluded.thumbnail, face_version=excluded.face_version
+                thumbnail=excluded.thumbnail, face_version=excluded.face_version,
+                captured_on=coalesce(excluded.captured_on, photos.captured_on)
             RETURNING id
         """,
             (
@@ -222,6 +236,7 @@ def index_photo(db, library, folder_id, path, info, engine):
                 info.st_size,
                 target.name,
                 engine.version if analyze else None,
+                captured_on,
             ),
         ).fetchone()[0]
         db.execute("DELETE FROM faces WHERE photo_id = ?", (photo,))

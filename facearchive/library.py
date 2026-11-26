@@ -36,6 +36,12 @@ CREATE INDEX photos_content_hash ON photos(content_hash, size) WHERE content_has
 PRAGMA user_version = 2;
 """
 
+TIMELINE_MIGRATION = """
+ALTER TABLE photos ADD COLUMN captured_on TEXT;
+CREATE INDEX photos_captured ON photos(captured_on, id) WHERE captured_on IS NOT NULL;
+PRAGMA user_version = 3;
+"""
+
 DUPLICATE_FILTER = """
 p.content_hash IS NOT NULL AND EXISTS (
     SELECT 1 FROM photos copy WHERE copy.content_hash = p.content_hash
@@ -53,9 +59,9 @@ class Library:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise RuntimeError(f"Unsupported library version {version}")
-            migrations = (SCHEMA, DUPLICATE_MIGRATION)[version:]
+            migrations = (SCHEMA, DUPLICATE_MIGRATION, TIMELINE_MIGRATION)[version:]
             if migrations:
                 db.executescript("BEGIN;\n" + "\n".join(migrations) + "\nCOMMIT;")
 
@@ -139,6 +145,38 @@ class Library:
                 + " ORDER BY f.photo_id DESC LIMIT ?) album "
                 "JOIN photos p ON p.id = album.photo_id ORDER BY p.id DESC"
             )
+        with self.connect() as db:
+            return db.execute(query, (*args, limit)).fetchall()
+
+    def capture_months(self):
+        with self.connect() as db:
+            rows = db.execute("""
+                SELECT DISTINCT substr(captured_on, 1, 7) AS month
+                FROM photos WHERE captured_on IS NOT NULL ORDER BY month DESC
+            """)
+            return [row["month"] for row in rows]
+
+    def timeline(self, month, before, limit, folder=None, people=(), *, duplicates=False):
+        conditions = ["p.captured_on >= ?", "p.captured_on < ?"]
+        args = [month + "-01", month + "-32"]
+        if before is not None:
+            conditions.append("(p.captured_on, p.id) < (?, ?)")
+            args.extend(before)
+        if folder is not None:
+            conditions.append("p.folder_id = ?")
+            args.append(folder)
+        for person in people:
+            conditions.append("""
+                EXISTS (SELECT 1 FROM faces f WHERE f.person_id = ? AND f.photo_id = p.id)
+            """)
+            args.append(person)
+        if duplicates:
+            conditions.append(DUPLICATE_FILTER)
+        query = (
+            "SELECT p.* FROM photos p WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY p.captured_on DESC, p.id DESC LIMIT ?"
+        )
         with self.connect() as db:
             return db.execute(query, (*args, limit)).fetchall()
 

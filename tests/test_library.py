@@ -261,7 +261,7 @@ def test_existing_database_migrates_without_losing_records(tmp_path):
     assert row["path"] == "test.jpg"
     assert row["content_hash"] is None
     with library.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_duplicates_filter_caches_hashes_and_invalidates_changed_copies(archive):
@@ -294,3 +294,47 @@ def test_hashing_can_cancel_before_processing_more_paths(archive):
     assert find_duplicates(library, lambda: bool(progress), progress.append, lambda *_: None) == 32
     assert find_duplicates(library, lambda: False, progress.append, lambda *_: None) == 10
     assert len(library.photos(None, 50, duplicates=True)) == 42
+
+
+def test_timeline_uses_capture_dates_and_stable_paging(archive):
+    library, source = archive
+    for name, value in (
+        ("a.jpg", "2019:12:31 10:00:00"),
+        ("b.jpg", "2019:12:28 08:00:00"),
+        ("c.jpg", "2019:12:31 08:00:00"),
+    ):
+        exif = Image.Exif()
+        exif[36867] = value
+        Image.new("RGB", (100, 100)).save(source / name, exif=exif)
+    path = source / "fallback.png"
+    write_photo(path)
+    os.utime(path, (1_577_923_200, 1_577_923_200))
+
+    assert run_scan(library) == (4, 4, 0)
+    assert library.capture_months() == ["2020-01", "2019-12"]
+    assert library.timeline("2020-01", None, 1)[0]["captured_on"] == "2020-01-02"
+
+    first = library.timeline("2019-12", None, 1)[0]
+    assert first["path"] == str(source / "c.jpg")
+    remaining = library.timeline("2019-12", (first["captured_on"], first["id"]), 10)
+    assert [row["path"] for row in remaining] == [str(source / "a.jpg"), str(source / "b.jpg")]
+
+
+def test_date_backfill_keeps_face_assignments_and_reuses_thumbnail(archive, monkeypatch):
+    from facearchive import scanner
+
+    library, source = archive
+    write_photo(source / "photo.jpg")
+    engine = SyntheticEngine()
+    assert run_scan(library, engine) == (1, 1, 0)
+    with library.connect() as db:
+        db.execute("UPDATE photos SET captured_on = NULL")
+
+    def reject_decode(*_):
+        pytest.fail("backfill should only read the image header")
+
+    monkeypatch.setattr(scanner, "open_scaled", reject_decode)
+    assert run_scan(library, engine) == (1, 0, 0)
+    assert library.photos(None, 1)[0]["captured_on"] is not None
+    assert library.people()[0]["total"] == 1
+    assert engine.calls == 1

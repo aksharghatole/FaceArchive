@@ -1,4 +1,5 @@
 import numpy as np
+from PIL import Image
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPlainTextEdit, QPushButton
 
@@ -167,4 +168,33 @@ def test_duplicate_scan_and_gallery(tmp_path, monkeypatch):
         "copy.png",
     }
     assert "2 files hashed" in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_timeline_selection_and_navigation(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(ui, "PAGE_SIZE", 1)
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    library.add_folder(source)
+    for name, stamp in (
+        ("a.jpg", "2023:08:21 12:00:00"),
+        ("b.jpg", "2023:08:15 12:00:00"),
+        ("c.jpg", "2023:09:12 12:00:00"),
+    ):
+        exif = Image.Exif()
+        exif[36867] = stamp
+        Image.new("RGB", (100, 100)).save(source / name, exif=exif)
+    window = Window(library)
+    finish_scan(app, window)
+    window.months.setCurrentIndex(window.months.findData("2023-08"))
+    assert window.grid.item(0).text() == "a.jpg"
+    assert window.next_page.isEnabled()
+    window.next_page.click()
+    assert window.grid.item(0).text() == "b.jpg"
+    assert not window.next_page.isEnabled()
+    window.previous_page.click()
+    assert window.grid.item(0).text() == "a.jpg"
     window.close()

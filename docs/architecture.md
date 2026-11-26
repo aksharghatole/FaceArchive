@@ -22,6 +22,10 @@ in cancellable chunks. Unchanged paths reuse stored SHA-256 values. The scanner
 clears a stored hash when the indexed file's timestamp or size changes. Duplicate
 queries use a partial index over known hashes and file sizes.
 
+The timeline stores a calendar date and indexes it with the photo ID for stable
+keyset pagination. Capture dates are extracted during indexing and backfilled
+from image headers for older records. Other EXIF fields stay in the originals.
+
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new
 embedding with a representative from each compatible album in bounded batches.
