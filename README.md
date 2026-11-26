@@ -1,5 +1,7 @@
 # FaceArchive
 
+[Run from source](#run-from-source) · [Exact duplicates](#exact-duplicates) · [Models](#models) · [Development and packaging](#development-and-packaging)
+
 FaceArchive is an offline Windows desktop photo organizer. It indexes existing folders, caches thumbnails, and can group detected faces into people albums using local OpenCV models. Face recognition is opt-in. The desktop app makes no network requests.
 
 ## Run from source
