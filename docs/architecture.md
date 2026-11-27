@@ -36,6 +36,11 @@ the existing gallery queries against the current library. Folder removal
 cascades to its albums. Person merges move references to the destination
 person. Clearing indexed locations also removes saved location filters.
 
+Exports run on a separate Qt worker and reuse the scanner's read-only source
+opening and identity checks. Each request creates its own destination folder.
+Copies use exclusive creation, are streamed in bounded chunks and are checked
+against the indexed file metadata. Cancellation removes an incomplete copy.
+
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new
 embedding with a representative from each compatible album in bounded batches.

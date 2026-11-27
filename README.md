@@ -17,6 +17,15 @@ py -3.12 -m venv .venv
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
+## Export photos
+
+Select photos on the current gallery page with Ctrl or Shift, then choose
+**Library → Export selected photos**. FaceArchive creates a new export folder
+inside the chosen destination and copies the selected originals byte for byte,
+including embedded metadata such as GPS. Filename collisions receive numeric
+suffixes. A cancelled export keeps completed copies and removes the in-progress
+copy. If a photo changed since indexing, rescan before exporting it.
+
 ## Smart albums
 
 Set the gallery filters you want, then choose **Smart Albums → Save current

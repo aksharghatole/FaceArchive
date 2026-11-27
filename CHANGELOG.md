@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added cancellable, copy-only export of selected gallery photos.
+
 - Added smart albums that save and reopen live gallery filters.
 
 - Added opt-in offline location browsing and clearing of indexed GPS areas.
