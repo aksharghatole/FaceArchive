@@ -17,6 +17,22 @@ py -3.12 -m venv .venv
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
+## Back up or restore the library index
+
+Choose **Library → Back up library index** and select a destination.
+FaceArchive creates a separate backup folder with a standalone
+`library.sqlite3`. The backup includes folder references, names, faces,
+corrections, indexed locations and smart albums. It contains sensitive data.
+Original photos, thumbnails and model files are outside the index backup.
+
+To restore manually, find the current data folder with **Library → Data
+folder**, then close every FaceArchive window. Rename the data folder to keep
+a rollback copy. Create a new folder at the original path and copy the backup's
+`library.sqlite3` into it. Reopen FaceArchive and scan to rebuild thumbnails
+from the original folders. For a source install, copy any local models from
+the rollback folder as needed. To roll back, close FaceArchive and restore the
+previous directory in its entirety.
+
 ## Export photos
 
 Select photos on the current gallery page with Ctrl or Shift, then choose
