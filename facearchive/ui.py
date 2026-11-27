@@ -56,11 +56,12 @@ class ScanThread(QThread):
     duplicate_update = Signal(int)
     result = Signal(str, object, int)
 
-    def __init__(self, library, recognize, parent, *, duplicates=False):
+    def __init__(self, library, recognize, parent, *, duplicates=False, locations=False):
         super().__init__(parent)
         self.library = library
         self.recognize = recognize
         self.duplicates = duplicates
+        self.locations = locations
         self.cancelled = Event()
 
     def run(self):
@@ -91,6 +92,7 @@ class ScanThread(QThread):
                 self.update.emit,
                 engine,
                 report_issue=report_issue,
+                locations=self.locations,
             )
             hashed = None
             if self.duplicates and not self.cancelled.is_set():
@@ -121,6 +123,10 @@ class Window(QMainWindow):
         self.pages = [None]
         self.next_cursor = None
         self.setWindowTitle("FaceArchive")
+        library_menu = self.menuBar().addMenu("Library")
+        self.clear_locations_action = library_menu.addAction(
+            "Clear indexed locations…", self.clear_locations
+        )
         self.scan_details = QPushButton("Scan details")
         self.scan_details.clicked.connect(self.show_scan_details)
         self.scan_details.setEnabled(False)
@@ -140,6 +146,9 @@ class Window(QMainWindow):
         toolbar.addWidget(self.recognize)
         self.find_copies = QCheckBox("Find exact duplicates")
         toolbar.addWidget(self.find_copies)
+        self.index_locations = QCheckBox("Index locations")
+        self.index_locations.setToolTip("Read embedded GPS and store approximate areas locally")
+        toolbar.addWidget(self.index_locations)
         self.button(toolbar, "Model folder", self.show_models)
         filters = QHBoxLayout()
         layout.addLayout(filters)
@@ -169,6 +178,10 @@ class Window(QMainWindow):
         self.months.setAccessibleName("Capture month")
         self.months.currentIndexChanged.connect(self.refresh_grid)
         paging.addWidget(self.months)
+        self.location_filter = QComboBox()
+        self.location_filter.setAccessibleName("Approximate location")
+        self.location_filter.currentIndexChanged.connect(self.refresh_grid)
+        paging.addWidget(self.location_filter)
         self.only_copies = QCheckBox("Show duplicates only")
         self.only_copies.toggled.connect(self.refresh_grid)
         paging.addWidget(self.only_copies)
@@ -195,6 +208,14 @@ class Window(QMainWindow):
             (self.folders, "All folders", [(row["path"], row["id"]) for row in folders]),
             (self.people, "All people", people),
             (self.also_people, "Also contains…", people),
+            (
+                self.location_filter,
+                "All locations",
+                [
+                    (f"{row['location_area']} ({row['total']})", row["location_area"])
+                    for row in self.library.location_areas()
+                ],
+            ),
             (
                 self.months,
                 "All dates",
@@ -246,6 +267,7 @@ class Window(QMainWindow):
         month = self.months.currentData()
         also = self.also_people.currentData()
         duplicates = self.only_copies.isChecked()
+        location = self.location_filter.currentData()
         if month is None:
             photos = self.library.photos(
                 self.pages[-1],
@@ -254,6 +276,7 @@ class Window(QMainWindow):
                 person,
                 also_person=also,
                 duplicates=duplicates,
+                location=location,
             )
         else:
             people = tuple(identity for identity in (person, also) if identity is not None)
@@ -264,6 +287,7 @@ class Window(QMainWindow):
                 folder,
                 people,
                 duplicates=duplicates,
+                location=location,
             )
         self.grid.clear()
         for photo in photos[:PAGE_SIZE]:
@@ -274,6 +298,8 @@ class Window(QMainWindow):
             tip = str(path)
             if photo["captured_on"]:
                 tip += f"\nTimeline date: {photo['captured_on']}"
+            if photo["location_area"]:
+                tip += f"\nApproximate location: {photo['location_area']}"
             item.setToolTip(tip)
             item.setData(ID_ROLE, (photo["id"], str(path)))
             self.grid.addItem(item)
@@ -315,7 +341,11 @@ class Window(QMainWindow):
         if self.worker is not None:
             return
         self.worker = ScanThread(
-            self.library, self.recognize.isChecked(), self, duplicates=self.find_copies.isChecked()
+            self.library,
+            self.recognize.isChecked(),
+            self,
+            duplicates=self.find_copies.isChecked(),
+            locations=self.index_locations.isChecked(),
         )
         self.worker.duplicate_update.connect(self.show_hash_progress)
         self.worker.update.connect(self.show_progress)
@@ -324,6 +354,7 @@ class Window(QMainWindow):
         self.stop.setEnabled(True)
         self.add.setEnabled(False)
         self.scan_button.setEnabled(False)
+        self.clear_locations_action.setEnabled(False)
         self.scan_details.setEnabled(False)
         self.statusBar().showMessage("Scanning…")
         self.refresh_grid()
@@ -364,7 +395,20 @@ class Window(QMainWindow):
         self.stop.setEnabled(False)
         self.add.setEnabled(True)
         self.scan_button.setEnabled(True)
+        self.clear_locations_action.setEnabled(True)
         self.refresh_filters()
+
+    def clear_locations(self):
+        if self.worker is not None:
+            return
+        answer = QMessageBox.question(
+            self, "Clear indexed locations", "Clear the approximate locations in this library?"
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.library.clear_locations()
+            self.index_locations.setChecked(False)
+            self.refresh_filters()
+            self.statusBar().showMessage("Indexed locations cleared")
 
     def rename_person(self):
         name, accepted = QInputDialog.getText(self, "Name person", "Name")

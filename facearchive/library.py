@@ -42,6 +42,12 @@ CREATE INDEX photos_captured ON photos(captured_on, id) WHERE captured_on IS NOT
 PRAGMA user_version = 3;
 """
 
+LOCATION_MIGRATION = """
+ALTER TABLE photos ADD COLUMN location_area TEXT;
+CREATE INDEX photos_location ON photos(location_area) WHERE location_area IS NOT NULL;
+PRAGMA user_version = 4;
+"""
+
 DUPLICATE_FILTER = """
 p.content_hash IS NOT NULL AND EXISTS (
     SELECT 1 FROM photos copy WHERE copy.content_hash = p.content_hash
@@ -59,9 +65,10 @@ class Library:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            migrations = (SCHEMA, DUPLICATE_MIGRATION, TIMELINE_MIGRATION, LOCATION_MIGRATION)
+            if not 0 <= version <= len(migrations):
                 raise RuntimeError(f"Unsupported library version {version}")
-            migrations = (SCHEMA, DUPLICATE_MIGRATION, TIMELINE_MIGRATION)[version:]
+            migrations = migrations[version:]
             if migrations:
                 db.executescript("BEGIN;\n" + "\n".join(migrations) + "\nCOMMIT;")
 
@@ -103,7 +110,15 @@ class Library:
         """)
 
     def photos(
-        self, before, limit, folder=None, person=None, *, also_person=None, duplicates=False
+        self,
+        before,
+        limit,
+        folder=None,
+        person=None,
+        *,
+        also_person=None,
+        duplicates=False,
+        location=None,
     ):
         if person is None:
             person, also_person = also_person, None
@@ -115,6 +130,9 @@ class Library:
                 args.append(folder)
             if duplicates:
                 conditions.append(DUPLICATE_FILTER)
+            if location is not None:
+                conditions.append("p.location_area = ?")
+                args.append(location)
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
             query = "SELECT p.* FROM photos p" + where + " ORDER BY p.id DESC LIMIT ?"
         else:
@@ -129,7 +147,10 @@ class Library:
                 args.append(folder)
             if duplicates:
                 photo_conditions.append(DUPLICATE_FILTER)
-            if folder is not None or duplicates:
+            if location is not None:
+                photo_conditions.append("p.location_area = ?")
+                args.append(location)
+            if len(photo_conditions) > 1:
                 conditions.append(
                     "EXISTS (SELECT 1 FROM photos p WHERE " + " AND ".join(photo_conditions) + ")"
                 )
@@ -156,7 +177,9 @@ class Library:
             """)
             return [row["month"] for row in rows]
 
-    def timeline(self, month, before, limit, folder=None, people=(), *, duplicates=False):
+    def timeline(
+        self, month, before, limit, folder=None, people=(), *, duplicates=False, location=None
+    ):
         conditions = ["p.captured_on >= ?", "p.captured_on < ?"]
         args = [month + "-01", month + "-32"]
         if before is not None:
@@ -172,6 +195,9 @@ class Library:
             args.append(person)
         if duplicates:
             conditions.append(DUPLICATE_FILTER)
+        if location is not None:
+            conditions.append("p.location_area = ?")
+            args.append(location)
         query = (
             "SELECT p.* FROM photos p WHERE "
             + " AND ".join(conditions)
@@ -179,6 +205,19 @@ class Library:
         )
         with self.connect() as db:
             return db.execute(query, (*args, limit)).fetchall()
+
+    def location_areas(self):
+        with self.connect() as db:
+            rows = db.execute("""
+                SELECT location_area, count(*) AS total FROM photos
+                WHERE location_area > '' GROUP BY location_area
+                ORDER BY total DESC, location_area
+            """)
+            return rows.fetchall()
+
+    def clear_locations(self):
+        with self.connect() as db:
+            db.execute("UPDATE photos SET location_area = NULL WHERE location_area IS NOT NULL")
 
     def exact_copies(self, photo, limit):
         with self.connect() as db:

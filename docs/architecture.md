@@ -24,7 +24,12 @@ queries use a partial index over known hashes and file sizes.
 
 The timeline stores a calendar date and indexes it with the photo ID for stable
 keyset pagination. Capture dates are extracted during indexing and backfilled
-from image headers for older records. Other EXIF fields stay in the originals.
+from image headers for older records.
+
+Location indexing is opt-in. The scanner extracts only a rounded latitude and
+longitude pair from valid GPS EXIF, and remembers when an unchanged file has
+already been checked. Changed files invalidate that state. The library can
+clear these areas without opening originals.
 
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new

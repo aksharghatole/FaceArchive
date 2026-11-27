@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from facearchive.metadata import capture_day
+from facearchive.metadata import indexed_metadata
 
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 THUMBNAIL_SIZE = 256
@@ -66,7 +66,7 @@ def write_thumbnail(image, target):
             temporary.unlink(missing_ok=True)
 
 
-def scan(library, cancelled, progress, engine=None, *, report_issue=None):
+def scan(library, cancelled, progress, engine=None, *, report_issue=None, locations=False):
     with library.connect() as db:
         folders = db.execute("SELECT * FROM folders ORDER BY id").fetchall()
     indexed = errors = visited = 0
@@ -125,7 +125,7 @@ def scan(library, cancelled, progress, engine=None, *, report_issue=None):
                         info = path.lstat()
                         if ordinary(info):
                             updated, inference_error = index_photo(
-                                db, library, folder["id"], path, info, engine
+                                db, library, folder["id"], path, info, engine, locations
                             )
                             indexed += updated
                             if inference_error is not None:
@@ -176,11 +176,17 @@ def clean_cache(library, cancelled, record_issue):
                     record_issue("Thumbnail cleanup", entry.path, error)
 
 
-def index_photo(db, library, folder_id, path, info, engine):
+def index_photo(db, library, folder_id, path, info, engine, locations):
     row = db.execute("SELECT * FROM photos WHERE path = ?", (str(path),)).fetchone()
     changed = row is None or (row["mtime"], row["size"]) != (info.st_mtime_ns, info.st_size)
-    if changed and row is not None and row["content_hash"] is not None:
-        db.execute("UPDATE photos SET content_hash = NULL WHERE id = ?", (row["id"],))
+    if (
+        changed
+        and row is not None
+        and (row["content_hash"] is not None or row["location_area"] is not None)
+    ):
+        db.execute(
+            "UPDATE photos SET content_hash = NULL, location_area = NULL WHERE id = ?", (row["id"],)
+        )
     target = thumbnail_path(library, path, info)
     needs_thumbnail = not target.is_file()
     analyze = engine is not None and (changed or row["face_version"] != engine.version)
@@ -199,15 +205,23 @@ def index_photo(db, library, folder_id, path, info, engine):
             image = open_scaled(path, THUMBNAIL_SIZE)
         write_thumbnail(image, target)
     needs_date = changed or row["captured_on"] is None
-    captured_on = None
-    if needs_date:
+    needs_location = locations and (changed or row["location_area"] is None)
+    if not (changed or analyze or needs_date or needs_location):
+        return 0, inference_error
+    captured_on = None if changed else row["captured_on"]
+    area = None if changed else row["location_area"]
+    if needs_date or needs_location:
         if image is None:
             with open_original(path) as stream, Image.open(stream) as header:
-                captured_on = capture_day(header, info.st_mtime_ns)
+                day, found_area = indexed_metadata(
+                    header, info.st_mtime_ns, needs_date, needs_location
+                )
         else:
-            captured_on = capture_day(image, info.st_mtime_ns)
-    if not changed and not analyze and not needs_date:
-        return 0, inference_error
+            day, found_area = indexed_metadata(image, info.st_mtime_ns, needs_date, needs_location)
+        if needs_date:
+            captured_on = day
+        if needs_location:
+            area = found_area
     current = path.lstat()
     if (current.st_mtime_ns, current.st_size, current.st_ino) != (
         info.st_mtime_ns,
@@ -216,17 +230,22 @@ def index_photo(db, library, folder_id, path, info, engine):
     ):
         raise OSError("Photo changed while scanning")
     if not changed and not analyze:
-        db.execute("UPDATE photos SET captured_on = ? WHERE id = ?", (captured_on, row["id"]))
+        db.execute(
+            "UPDATE photos SET captured_on = ?, location_area = ? WHERE id = ?",
+            (captured_on, area, row["id"]),
+        )
         return 0, inference_error
     db.execute("SAVEPOINT photo")
     try:
         photo = db.execute(
             """
-            INSERT INTO photos(folder_id, path, mtime, size, thumbnail, face_version, captured_on)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO photos(
+                folder_id, path, mtime, size, thumbnail, face_version, captured_on, location_area
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size,
                 thumbnail=excluded.thumbnail, face_version=excluded.face_version,
-                captured_on=coalesce(excluded.captured_on, photos.captured_on)
+                captured_on=excluded.captured_on, location_area=excluded.location_area
             RETURNING id
         """,
             (
@@ -237,6 +256,7 @@ def index_photo(db, library, folder_id, path, info, engine):
                 target.name,
                 engine.version if analyze else None,
                 captured_on,
+                area,
             ),
         ).fetchone()[0]
         db.execute("DELETE FROM faces WHERE photo_id = ?", (photo,))

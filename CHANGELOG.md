@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added opt-in offline location browsing and clearing of indexed GPS areas.
+
 - Added month-based timeline browsing with local EXIF dates.
 
 - Added opt-in exact-duplicate scanning and gallery review.
