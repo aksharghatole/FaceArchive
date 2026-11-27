@@ -41,6 +41,11 @@ opening and identity checks. Each request creates its own destination folder.
 Copies use exclusive creation, are streamed in bounded chunks and are checked
 against the indexed file metadata. Cancellation removes an incomplete copy.
 
+Index backups use SQLite’s online backup API to capture committed data,
+including uncheckpointed WAL entries. The worker checks the standalone copy
+with SQLite before moving it out of staging. Originals, models and the
+thumbnail cache are separate from the snapshot.
+
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new
 embedding with a representative from each compatible album in bounded batches.

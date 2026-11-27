@@ -2,6 +2,7 @@
 
 import sqlite3
 import sys
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from facearchive.backup import backup_index
 from facearchive.duplicates import find_duplicates
 from facearchive.export import ExportPhoto, export_photos
 from facearchive.library import Library
@@ -117,22 +119,19 @@ class ScanThread(QThread):
         self.result.emit(message, issues, issue_count)
 
 
-class ExportThread(QThread):
+class FileTaskThread(QThread):
     progress = Signal(int)
     completed = Signal(object, str)
 
-    def __init__(self, photos, destination, parent):
+    def __init__(self, task, parent):
         super().__init__(parent)
-        self.photos = photos
-        self.destination = destination
+        self.task = task
         self.cancelled = Event()
 
     def run(self):
         try:
-            result = export_photos(
-                self.photos, self.destination, self.cancelled.is_set, self.progress.emit
-            )
-        except OSError as error:
+            result = self.task(self.cancelled.is_set, self.progress.emit)
+        except (OSError, sqlite3.Error) as error:
             self.completed.emit(None, str(error))
         else:
             self.completed.emit(result, "")
@@ -143,8 +142,8 @@ class Window(QMainWindow):
         super().__init__()
         self.library = library
         self.worker = None
-        self.export_worker = None
-        self.export_progress = None
+        self.file_worker = None
+        self.file_progress = None
         self.scan_report = ""
         self.pages = [None]
         self.next_cursor = None
@@ -152,6 +151,8 @@ class Window(QMainWindow):
         library_menu = self.menuBar().addMenu("Library")
         self.export_action = library_menu.addAction("Export selected photos…", self.export_selected)
         self.export_action.setEnabled(False)
+        self.backup_action = library_menu.addAction("Back up library index…", self.back_up)
+        library_menu.addAction("Data folder…", self.show_data_folder)
         self.clear_locations_action = library_menu.addAction(
             "Clear indexed locations…", self.clear_locations
         )
@@ -350,11 +351,11 @@ class Window(QMainWindow):
 
     def update_export_action(self):
         self.export_action.setEnabled(
-            bool(self.grid.selectedItems()) and self.worker is None and self.export_worker is None
+            bool(self.grid.selectedItems()) and self.worker is None and self.file_worker is None
         )
 
     def export_selected(self):
-        if self.worker is not None or self.export_worker is not None:
+        if self.worker is not None or self.file_worker is not None:
             return
         photos = [
             ExportPhoto(Path(item.data(ID_ROLE)[1]), *item.data(ID_ROLE + 1))
@@ -362,34 +363,72 @@ class Window(QMainWindow):
         ]
         if not photos:
             return
-        chosen = QFileDialog.getExistingDirectory(self, "Choose a folder for exported copies")
+        destination = self.choose_destination("Choose a folder for exported copies")
+        if destination is not None:
+            self.start_file_task(
+                partial(export_photos, photos, destination),
+                "Copying selected photos…",
+                len(photos),
+                self.show_export_result,
+            )
+
+    def choose_destination(self, title):
+        chosen = QFileDialog.getExistingDirectory(self, title)
         if not chosen:
-            return
+            return None
         try:
             destination = Path(chosen).resolve(strict=True)
             if destination.is_relative_to(self.library.directory.resolve()):
                 raise ValueError("Choose a destination outside FaceArchive’s data folder.")
-        except (OSError, ValueError) as error:
-            QMessageBox.warning(self, "Cannot export photos", str(error))
+            return destination
+        except (OSError, ValueError, RuntimeError) as error:
+            QMessageBox.warning(self, title, str(error))
+            return None
+
+    def back_up(self):
+        if self.worker is not None or self.file_worker is not None:
             return
-        worker = ExportThread(photos, destination, self)
-        self.export_worker = worker
-        progress = QProgressDialog("Copying selected photos…", "Cancel", 0, len(photos), self)
+        destination = self.choose_destination("Choose a folder for the library backup")
+        if destination is not None:
+            self.start_file_task(
+                partial(backup_index, self.library, destination),
+                "Backing up the library index…",
+                100,
+                self.show_backup_result,
+            )
+
+    def show_data_folder(self):
+        QMessageBox.information(self, "FaceArchive data folder", str(self.library.directory))
+
+    def show_backup_result(self, result, error):
+        self.file_progress.hide()
+        if error:
+            QMessageBox.warning(self, "Cannot back up the library", error)
+        elif result is None:
+            self.statusBar().showMessage("Backup cancelled")
+        else:
+            self.statusBar().showMessage(f"Library backup saved · {result}")
+
+    def start_file_task(self, task, label, maximum, completed):
+        worker = FileTaskThread(task, self)
+        self.file_worker = worker
+        progress = QProgressDialog(label, "Cancel", 0, maximum, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
         progress.setMinimumDuration(0)
         progress.canceled.connect(worker.cancelled.set)
         worker.progress.connect(progress.setValue)
-        worker.completed.connect(self.show_export_result)
-        worker.finished.connect(self.export_finished)
-        self.export_progress = progress
+        worker.completed.connect(completed)
+        worker.finished.connect(self.file_task_finished)
+        self.file_progress = progress
         self.update_export_action()
+        self.backup_action.setEnabled(False)
         progress.show()
         worker.start()
 
     def show_export_result(self, result, error):
-        self.export_progress.hide()
+        self.file_progress.hide()
         if error:
             QMessageBox.warning(self, "Cannot export photos", error)
             return
@@ -409,12 +448,13 @@ class Window(QMainWindow):
             self.button(layout, "Close", dialog.accept)
             dialog.exec()
 
-    def export_finished(self):
-        self.export_progress.deleteLater()
-        self.export_progress = None
-        self.export_worker.deleteLater()
-        self.export_worker = None
+    def file_task_finished(self):
+        self.file_progress.deleteLater()
+        self.file_progress = None
+        self.file_worker.deleteLater()
+        self.file_worker = None
         self.update_export_action()
+        self.backup_action.setEnabled(True)
 
     def add_folder(self):
         chosen = QFileDialog.getExistingDirectory(self, "Add photo folder")
@@ -446,7 +486,7 @@ class Window(QMainWindow):
         )
 
     def start_scan(self):
-        if self.worker is not None or self.export_worker is not None:
+        if self.worker is not None or self.file_worker is not None:
             return
         self.worker = ScanThread(
             self.library,
@@ -457,6 +497,7 @@ class Window(QMainWindow):
         )
         self.worker.duplicate_update.connect(self.show_hash_progress)
         self.update_export_action()
+        self.backup_action.setEnabled(False)
         self.worker.update.connect(self.show_progress)
         self.worker.result.connect(self.show_result)
         self.worker.finished.connect(self.scan_finished)
@@ -504,6 +545,7 @@ class Window(QMainWindow):
         self.worker.deleteLater()
         self.worker = None
         self.update_export_action()
+        self.backup_action.setEnabled(True)
         self.stop.setEnabled(False)
         self.add.setEnabled(True)
         self.scan_button.setEnabled(True)
@@ -723,8 +765,8 @@ class Window(QMainWindow):
         dialog.exec()
 
     def closeEvent(self, event):
-        if self.export_worker is not None:
-            self.export_worker.cancelled.set()
+        if self.file_worker is not None:
+            self.file_worker.cancelled.set()
             event.ignore()
             return
         if self.worker is not None:

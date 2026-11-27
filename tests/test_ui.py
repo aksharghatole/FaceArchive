@@ -293,13 +293,37 @@ def test_export_selected_through_library_menu(tmp_path, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(destination))
     window.export_action.trigger()
     loop = QEventLoop()
-    window.export_worker.finished.connect(loop.quit)
+    window.file_worker.finished.connect(loop.quit)
     QTimer.singleShot(5000, loop.quit)
     loop.exec()
     app.processEvents()
 
-    assert window.export_worker is None
+    assert window.file_worker is None
     assert "2 copied" in window.statusBar().currentMessage()
     copied = {path.name: path.read_bytes() for path in destination.glob("*/*.jpg")}
     assert copied == {name: (source / name).read_bytes() for name in ("second.jpg", "third.jpg")}
+    window.close()
+
+
+def test_library_menu_creates_index_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    library.save_album("Saved")
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    window = Window(library)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(destination))
+    window.backup_action.trigger()
+    loop = QEventLoop()
+    window.file_worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    app.processEvents()
+
+    assert window.file_worker is None
+    assert window.backup_action.isEnabled()
+    assert "Library backup saved" in window.statusBar().currentMessage()
+    snapshot = next(destination.glob("*/library.sqlite3"))
+    assert Library(snapshot.parent).smart_albums()[0]["name"] == "Saved"
     window.close()

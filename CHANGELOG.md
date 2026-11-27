@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added verified standalone backups of the local library index.
+
 - Added cancellable, copy-only export of selected gallery photos.
 
 - Added smart albums that save and reopen live gallery filters.
