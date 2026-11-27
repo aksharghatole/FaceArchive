@@ -19,6 +19,13 @@ py -3.12 -m venv .venv
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
+## Timeline
+
+Choose a month in **All dates** to see its photos in descending date order.
+Folder, people and duplicate filters still apply. The timeline uses the original
+EXIF capture date, then the digitized date, then the file's UTC modification
+date. Existing libraries gain dates on the next scan.
+
 ## Exact duplicates
 
 Enable **Find exact duplicates** before scanning. FaceArchive hashes indexed files

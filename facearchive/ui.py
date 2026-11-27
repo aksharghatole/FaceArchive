@@ -7,7 +7,17 @@ from tempfile import TemporaryDirectory
 from threading import Event
 
 from PIL import Image
-from PySide6.QtCore import QLockFile, QRectF, QSize, QStandardPaths, Qt, QThread, Signal
+from PySide6.QtCore import (
+    QDate,
+    QLocale,
+    QLockFile,
+    QRectF,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QThread,
+    Signal,
+)
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -155,6 +165,10 @@ class Window(QMainWindow):
         self.button(paging, "First page", self.refresh_grid)
         self.previous_page = self.button(paging, "Previous page", self.go_back)
         self.next_page = self.button(paging, "Next page", self.go_forward)
+        self.months = QComboBox()
+        self.months.setAccessibleName("Capture month")
+        self.months.currentIndexChanged.connect(self.refresh_grid)
+        paging.addWidget(self.months)
         self.only_copies = QCheckBox("Show duplicates only")
         self.only_copies.toggled.connect(self.refresh_grid)
         paging.addWidget(self.only_copies)
@@ -181,6 +195,19 @@ class Window(QMainWindow):
             (self.folders, "All folders", [(row["path"], row["id"]) for row in folders]),
             (self.people, "All people", people),
             (self.also_people, "Also contains…", people),
+            (
+                self.months,
+                "All dates",
+                [
+                    (
+                        QLocale().toString(
+                            QDate.fromString(month + "-01", "yyyy-MM-dd"), "MMMM yyyy"
+                        ),
+                        month,
+                    )
+                    for month in self.library.capture_months()
+                ],
+            ),
         ):
             selected = combo.currentData()
             combo.blockSignals(True)
@@ -216,24 +243,44 @@ class Window(QMainWindow):
             self.also_people.setCurrentIndex(0)
             self.also_people.blockSignals(False)
         self.also_people.setEnabled(person is not None)
-        photos = self.library.photos(
-            self.pages[-1],
-            PAGE_SIZE + 1,
-            folder,
-            person,
-            also_person=self.also_people.currentData(),
-            duplicates=self.only_copies.isChecked(),
-        )
+        month = self.months.currentData()
+        also = self.also_people.currentData()
+        duplicates = self.only_copies.isChecked()
+        if month is None:
+            photos = self.library.photos(
+                self.pages[-1],
+                PAGE_SIZE + 1,
+                folder,
+                person,
+                also_person=also,
+                duplicates=duplicates,
+            )
+        else:
+            people = tuple(identity for identity in (person, also) if identity is not None)
+            photos = self.library.timeline(
+                month,
+                self.pages[-1],
+                PAGE_SIZE + 1,
+                folder,
+                people,
+                duplicates=duplicates,
+            )
         self.grid.clear()
         for photo in photos[:PAGE_SIZE]:
             path = Path(photo["path"])
             item = QListWidgetItem(
                 QIcon(str(self.library.thumbnails / photo["thumbnail"])), path.name
             )
-            item.setToolTip(str(path))
+            tip = str(path)
+            if photo["captured_on"]:
+                tip += f"\nTimeline date: {photo['captured_on']}"
+            item.setToolTip(tip)
             item.setData(ID_ROLE, (photo["id"], str(path)))
             self.grid.addItem(item)
-        self.next_cursor = photos[PAGE_SIZE - 1]["id"] if len(photos) > PAGE_SIZE else None
+        self.next_cursor = None
+        if len(photos) > PAGE_SIZE:
+            last = photos[PAGE_SIZE - 1]
+            self.next_cursor = (last["captured_on"], last["id"]) if month else last["id"]
         self.previous_page.setEnabled(len(self.pages) > 1)
         self.next_page.setEnabled(self.next_cursor is not None)
 
