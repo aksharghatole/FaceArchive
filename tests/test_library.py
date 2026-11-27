@@ -261,7 +261,7 @@ def test_existing_database_migrates_without_losing_records(tmp_path):
     assert row["path"] == "test.jpg"
     assert row["content_hash"] is None
     with library.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_duplicates_filter_caches_hashes_and_invalidates_changed_copies(archive):
@@ -338,3 +338,41 @@ def test_date_backfill_keeps_face_assignments_and_reuses_thumbnail(archive, monk
     assert library.photos(None, 1)[0]["captured_on"] is not None
     assert library.people()[0]["total"] == 1
     assert engine.calls == 1
+
+
+def write_located_photo(path, *, minutes=30):
+    exif = Image.Exif()
+    exif[36867] = "2022:05:12 10:00:00"
+    exif[34853] = {1: "S", 2: (12, minutes, 0), 3: "W", 4: (45, 20, 0)}
+    Image.new("RGB", (100, 100)).save(path, exif=exif)
+
+
+def test_location_index_is_opt_in_and_can_be_cleared(archive):
+    library, source = archive
+    path = source / "located.jpg"
+    write_located_photo(path)
+    write_located_photo(source / "invalid.jpg", minutes=99)
+    original = path.read_bytes()
+    engine = SyntheticEngine()
+    assert run_scan(library, engine) == (2, 2, 0)
+    assert library.location_areas() == []
+    assert scan(library, lambda: False, lambda *_: None, engine, locations=True) == (2, 0, 0)
+    location = "-12.50, -45.33"
+    assert [tuple(row) for row in library.location_areas()] == [(location, 1)]
+    assert [row["path"] for row in library.photos(None, 10, location=location)] == [str(path)]
+    person = library.people()[0]["id"]
+    assert len(library.photos(None, 10, person=person, location=location)) == 1
+    assert len(library.timeline("2022-05", None, 10, people=(person,), location=location)) == 1
+    assert path.read_bytes() == original
+    assert engine.calls == 2
+
+    write_located_photo(path, minutes=1)
+    indexed = library.photos(None, 10, location=location)[0]
+    os.utime(path, ns=(indexed["mtime"] + 10_000, indexed["mtime"] + 10_000))
+    assert run_scan(library) == (2, 1, 0)
+    assert library.location_areas() == []
+    assert scan(library, lambda: False, lambda *_: None, locations=True) == (2, 0, 0)
+    assert [tuple(row) for row in library.location_areas()] == [("-12.02, -45.33", 1)]
+    library.clear_locations()
+    assert library.location_areas() == []
+    assert len(library.photos(None, 10)) == 2

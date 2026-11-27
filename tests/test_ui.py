@@ -1,12 +1,20 @@
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPlainTextEdit, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+)
 
 from facearchive import ui
 from facearchive.library import Library
 from facearchive.ui import Window, run_window
-from tests.test_library import SyntheticEngine, run_scan, write_photo
+from tests.test_library import SyntheticEngine, run_scan, write_located_photo, write_photo
 
 
 def finish_scan(app, window):
@@ -197,4 +205,27 @@ def test_timeline_selection_and_navigation(tmp_path, monkeypatch):
     assert not window.next_page.isEnabled()
     window.previous_page.click()
     assert window.grid.item(0).text() == "a.jpg"
+    window.close()
+
+
+def test_location_filter_and_clear_action(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    library.add_folder(source)
+    write_located_photo(source / "located.jpg")
+    write_photo(source / "other.jpg")
+    window = Window(library)
+    window.index_locations.setChecked(True)
+    finish_scan(app, window)
+    window.location_filter.setCurrentIndex(window.location_filter.findData("-12.50, -45.33"))
+    assert window.grid.count() == 1
+    assert window.grid.item(0).text() == "located.jpg"
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    window.clear_locations_action.trigger()
+    assert window.location_filter.count() == 1
+    assert not window.index_locations.isChecked()
+    assert window.grid.count() == 2
     window.close()
