@@ -127,6 +127,10 @@ class Window(QMainWindow):
         self.clear_locations_action = library_menu.addAction(
             "Clear indexed locations…", self.clear_locations
         )
+        album_menu = self.menuBar().addMenu("Smart Albums")
+        self.save_album_action = album_menu.addAction("Save current filters…", self.save_album)
+        album_menu.addAction("Open smart album…", self.open_album)
+        self.delete_album_action = album_menu.addAction("Delete smart album…", self.delete_album)
         self.scan_details = QPushButton("Scan details")
         self.scan_details.clicked.connect(self.show_scan_details)
         self.scan_details.setEnabled(False)
@@ -236,6 +240,9 @@ class Window(QMainWindow):
             combo.addItem(label, None)
             for title, value in items:
                 combo.addItem(title, value)
+            if selected is not None and combo in (self.months, self.location_filter):
+                if combo.findData(selected) < 0:
+                    combo.addItem(str(selected), selected)
             combo.setCurrentIndex(max(0, combo.findData(selected)))
             combo.blockSignals(False)
         self.refresh_grid()
@@ -323,7 +330,9 @@ class Window(QMainWindow):
 
     def remove_folder(self):
         folder = self.folders.currentData()
-        answer = QMessageBox.question(self, "Remove folder", "Remove this folder from the index?")
+        answer = QMessageBox.question(
+            self, "Remove folder", "Remove this folder and smart albums that use it?"
+        )
         if folder is not None and answer == QMessageBox.StandardButton.Yes:
             self.library.remove_folder(folder)
             self.refresh_filters()
@@ -355,6 +364,8 @@ class Window(QMainWindow):
         self.add.setEnabled(False)
         self.scan_button.setEnabled(False)
         self.clear_locations_action.setEnabled(False)
+        self.save_album_action.setEnabled(False)
+        self.delete_album_action.setEnabled(False)
         self.scan_details.setEnabled(False)
         self.statusBar().showMessage("Scanning…")
         self.refresh_grid()
@@ -396,19 +407,82 @@ class Window(QMainWindow):
         self.add.setEnabled(True)
         self.scan_button.setEnabled(True)
         self.clear_locations_action.setEnabled(True)
+        self.save_album_action.setEnabled(True)
+        self.delete_album_action.setEnabled(True)
         self.refresh_filters()
 
     def clear_locations(self):
         if self.worker is not None:
             return
         answer = QMessageBox.question(
-            self, "Clear indexed locations", "Clear the approximate locations in this library?"
+            self,
+            "Clear indexed locations",
+            "Clear approximate locations and remove smart albums that use a location filter?",
         )
         if answer == QMessageBox.StandardButton.Yes:
             self.library.clear_locations()
             self.index_locations.setChecked(False)
+            self.location_filter.setCurrentIndex(0)
             self.refresh_filters()
             self.statusBar().showMessage("Indexed locations cleared")
+
+    def album_filters(self):
+        return {
+            "folder": self.folders,
+            "person": self.people,
+            "also_person": self.also_people,
+            "month": self.months,
+            "location": self.location_filter,
+        }
+
+    def save_album(self):
+        name, accepted = QInputDialog.getText(self, "Save smart album", "Album name")
+        if not accepted:
+            return
+        filters = {key: box.currentData() for key, box in self.album_filters().items()}
+        try:
+            self.library.save_album(name, duplicates=self.only_copies.isChecked(), **filters)
+        except (ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "Cannot save smart album", str(error))
+        else:
+            self.statusBar().showMessage(f"Saved smart album · {name.strip()}")
+
+    def choose_album(self, title):
+        albums = {row["name"]: row for row in self.library.smart_albums()}
+        if not albums:
+            QMessageBox.information(self, title, "There are no saved smart albums.")
+            return None
+        name, accepted = QInputDialog.getItem(
+            self, title, "Smart album", list(albums), editable=False
+        )
+        return albums[name] if accepted else None
+
+    def open_album(self):
+        album = self.choose_album("Open smart album")
+        if album is None:
+            return
+        for key, box in self.album_filters().items():
+            value = album[key]
+            box.blockSignals(True)
+            if value is not None and box.findData(value) < 0:
+                box.addItem(str(value), value)
+            box.setCurrentIndex(max(0, box.findData(value)))
+            box.blockSignals(False)
+        self.only_copies.blockSignals(True)
+        self.only_copies.setChecked(bool(album["duplicates"]))
+        self.only_copies.blockSignals(False)
+        self.refresh_grid()
+        self.statusBar().showMessage(f"Smart album · {album['name']}")
+
+    def delete_album(self):
+        album = self.choose_album("Delete smart album")
+        if album is None:
+            return
+        answer = QMessageBox.question(self, "Delete smart album", f"Delete “{album['name']}”?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.library.delete_album(album["id"])
+            self.refresh_filters()
+            self.statusBar().showMessage("Smart album deleted")
 
     def rename_person(self):
         name, accepted = QInputDialog.getText(self, "Name person", "Name")

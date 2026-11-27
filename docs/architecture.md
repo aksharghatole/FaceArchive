@@ -31,6 +31,11 @@ longitude pair from valid GPS EXIF, and remembers when an unchanged file has
 already been checked. Changed files invalidate that state. The library can
 clear these areas without opening originals.
 
+Smart albums store gallery filter parameters in SQLite. Opening an album runs
+the existing gallery queries against the current library. Folder removal
+cascades to its albums. Person merges move references to the destination
+person. Clearing indexed locations also removes saved location filters.
+
 Recognition runs in the scan worker and is opt-in. YuNet detects faces and landmarks.
 SFace aligns crops and computes normalized embeddings. Matching compares each new
 embedding with a representative from each compatible album in bounded batches.

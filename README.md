@@ -17,6 +17,15 @@ py -3.12 -m venv .venv
 3. For face albums, open **Model folder** to find the local data path. Copy in both ONNX files described below, enable **Recognize faces**, and select **Scan**. This also analyzes photos already in the index.
 4. Select a person to name or merge their album. Open a photo and select a face to highlight it. Assign it to another album, split it into a new album, unassign it, or dismiss it as a false detection.
 
+## Smart albums
+
+Set the gallery filters you want, then choose **Smart Albums → Save current
+filters**. **Open smart album** reapplies those filters to the current library,
+so new matches appear after a scan. **Delete smart album** removes the saved
+filters. Removing a folder removes albums that refer to it. Clearing indexed
+locations also removes location-based smart albums. Both operations leave
+original photos untouched.
+
 ## Locations
 
 Enable **Index locations** and scan to group geotagged photos by approximate

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
@@ -228,4 +229,46 @@ def test_location_filter_and_clear_action(tmp_path, monkeypatch):
     assert window.location_filter.count() == 1
     assert not window.index_locations.isChecked()
     assert window.grid.count() == 2
+    window.close()
+
+
+def test_smart_album_reopens_filters_and_shows_new_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source = tmp_path / "photos"
+    source.mkdir()
+    library.add_folder(source)
+    write_located_photo(source / "match.jpg")
+    write_photo(source / "other.jpg")
+
+    window = Window(library)
+    window.index_locations.setChecked(True)
+    finish_scan(app, window)
+    window.months.setCurrentIndex(window.months.findData("2022-05"))
+    location = "-12.50, -45.33"
+    window.location_filter.setCurrentIndex(window.location_filter.findData(location))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("Spring", True))
+    window.save_album_action.trigger()
+    window.months.setCurrentIndex(0)
+    window.location_filter.setCurrentIndex(0)
+    write_located_photo(source / "new-match.jpg")
+    finish_scan(app, window)
+    assert window.grid.count() == 3
+
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *_, **_kw: ("Spring", True))
+    window.open_album()
+    assert window.months.currentData() == "2022-05"
+    assert window.location_filter.currentData() == location
+    assert window.grid.count() == 2
+    (source / "match.jpg").unlink()
+    (source / "new-match.jpg").unlink()
+    finish_scan(app, window)
+    assert window.months.currentData() == "2022-05"
+    assert window.location_filter.currentData() == location
+    assert window.grid.count() == 0
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    window.delete_album_action.trigger()
+    assert not library.smart_albums()
+    assert window.grid.count() == 0
     window.close()
