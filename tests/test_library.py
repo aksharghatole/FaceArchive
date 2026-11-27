@@ -261,7 +261,7 @@ def test_existing_database_migrates_without_losing_records(tmp_path):
     assert row["path"] == "test.jpg"
     assert row["content_hash"] is None
     with library.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_duplicates_filter_caches_hashes_and_invalidates_changed_copies(archive):
@@ -376,3 +376,33 @@ def test_location_index_is_opt_in_and_can_be_cleared(archive):
     library.clear_locations()
     assert library.location_areas() == []
     assert len(library.photos(None, 10)) == 2
+
+
+def test_smart_album_references_survive_person_merge_and_cleanup(archive):
+    library, source = archive
+    write_photo(source / "photo.jpg")
+    assert run_scan(library, SyntheticEngine()) == (1, 1, 0)
+    photo = library.photos(None, 1)[0]
+    person = library.people()[0]["id"]
+    with library.connect() as db:
+        target = db.execute("INSERT INTO people(name) VALUES ('Target')").lastrowid
+    library.save_album("People", person=person, also_person=target)
+    library.save_album("Folder", folder=photo["folder_id"])
+    library.save_album("Location", location="11.00, 24.00")
+    with pytest.raises(ValueError, match="already exists"):
+        library.save_album(" people ")
+    with pytest.raises(ValueError, match="Enter a name"):
+        library.save_album(" ")
+
+    library.merge(person, target)
+    reopened = Library(library.directory)
+    people_album = next(row for row in reopened.smart_albums() if row["name"] == "People")
+    assert people_album["person"] == target
+    assert people_album["also_person"] is None
+
+    reopened.remove_folder(photo["folder_id"])
+    reopened.clear_locations()
+    assert [row["name"] for row in reopened.smart_albums()] == ["People"]
+    assert (source / "photo.jpg").is_file()
+    reopened.delete_album(people_album["id"])
+    assert not reopened.smart_albums()

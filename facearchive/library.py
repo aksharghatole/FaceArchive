@@ -48,6 +48,23 @@ CREATE INDEX photos_location ON photos(location_area) WHERE location_area IS NOT
 PRAGMA user_version = 4;
 """
 
+ALBUM_MIGRATION = """
+CREATE TABLE smart_albums (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    folder INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+    person INTEGER REFERENCES people(id) ON DELETE CASCADE,
+    also_person INTEGER REFERENCES people(id) ON DELETE CASCADE,
+    month TEXT,
+    location TEXT,
+    duplicates INTEGER NOT NULL
+);
+CREATE INDEX smart_albums_folder ON smart_albums(folder);
+CREATE INDEX smart_albums_person ON smart_albums(person);
+CREATE INDEX smart_albums_also_person ON smart_albums(also_person);
+PRAGMA user_version = 5;
+"""
+
 DUPLICATE_FILTER = """
 p.content_hash IS NOT NULL AND EXISTS (
     SELECT 1 FROM photos copy WHERE copy.content_hash = p.content_hash
@@ -65,7 +82,13 @@ class Library:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            migrations = (SCHEMA, DUPLICATE_MIGRATION, TIMELINE_MIGRATION, LOCATION_MIGRATION)
+            migrations = (
+                SCHEMA,
+                DUPLICATE_MIGRATION,
+                TIMELINE_MIGRATION,
+                LOCATION_MIGRATION,
+                ALBUM_MIGRATION,
+            )
             if not 0 <= version <= len(migrations):
                 raise RuntimeError(f"Unsupported library version {version}")
             migrations = migrations[version:]
@@ -107,6 +130,8 @@ class Library:
         db.execute("""
             DELETE FROM people WHERE name IS NULL
             AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)
+            AND NOT EXISTS (SELECT 1 FROM smart_albums WHERE person = people.id)
+            AND NOT EXISTS (SELECT 1 FROM smart_albums WHERE also_person = people.id)
         """)
 
     def photos(
@@ -215,9 +240,47 @@ class Library:
             """)
             return rows.fetchall()
 
+    def save_album(
+        self,
+        name,
+        *,
+        folder=None,
+        person=None,
+        also_person=None,
+        month=None,
+        location=None,
+        duplicates=False,
+    ):
+        name = name.strip()
+        if not name:
+            raise ValueError("Enter a name for the smart album.")
+        with self.connect() as db:
+            inserted = db.execute(
+                """
+                INSERT INTO smart_albums(name, folder, person, also_person, month, location,
+                                         duplicates)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO NOTHING
+            """,
+                (name, folder, person, also_person, month, location, duplicates),
+            ).rowcount
+            if not inserted:
+                raise ValueError("A smart album with that name already exists.")
+
+    def smart_albums(self):
+        with self.connect() as db:
+            return db.execute("SELECT * FROM smart_albums ORDER BY name").fetchall()
+
+    def delete_album(self, album):
+        with self.connect() as db:
+            db.execute("DELETE FROM smart_albums WHERE id = ?", (album,))
+            self.prune_people(db)
+
     def clear_locations(self):
         with self.connect() as db:
             db.execute("UPDATE photos SET location_area = NULL WHERE location_area IS NOT NULL")
+            db.execute("DELETE FROM smart_albums WHERE location IS NOT NULL")
+            self.prune_people(db)
 
     def exact_copies(self, photo, limit):
         with self.connect() as db:
@@ -255,6 +318,16 @@ class Library:
                 (source, target),
             )
             db.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (target, source))
+            db.execute("UPDATE smart_albums SET person = ? WHERE person = ?", (target, source))
+            db.execute(
+                "UPDATE smart_albums SET also_person = ? WHERE also_person = ?", (target, source)
+            )
+            db.execute(
+                """
+                UPDATE smart_albums SET also_person = NULL WHERE person = ? AND also_person = ?
+            """,
+                (target, target),
+            )
             db.execute("DELETE FROM people WHERE id = ?", (source,))
 
     def correct(self, face, person=None, *, split=False, reject=False):

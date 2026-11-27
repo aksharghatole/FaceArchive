@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added smart albums that save and reopen live gallery filters.
+
 - Added opt-in offline location browsing and clearing of indexed GPS areas.
 
 - Added month-based timeline browsing with local EXIF dates.
