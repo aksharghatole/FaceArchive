@@ -20,6 +20,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -34,12 +35,14 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from facearchive.duplicates import find_duplicates
+from facearchive.export import ExportPhoto, export_photos
 from facearchive.library import Library
 from facearchive.scanner import open_scaled, scan
 
@@ -114,16 +117,41 @@ class ScanThread(QThread):
         self.result.emit(message, issues, issue_count)
 
 
+class ExportThread(QThread):
+    progress = Signal(int)
+    completed = Signal(object, str)
+
+    def __init__(self, photos, destination, parent):
+        super().__init__(parent)
+        self.photos = photos
+        self.destination = destination
+        self.cancelled = Event()
+
+    def run(self):
+        try:
+            result = export_photos(
+                self.photos, self.destination, self.cancelled.is_set, self.progress.emit
+            )
+        except OSError as error:
+            self.completed.emit(None, str(error))
+        else:
+            self.completed.emit(result, "")
+
+
 class Window(QMainWindow):
     def __init__(self, library):
         super().__init__()
         self.library = library
         self.worker = None
+        self.export_worker = None
+        self.export_progress = None
         self.scan_report = ""
         self.pages = [None]
         self.next_cursor = None
         self.setWindowTitle("FaceArchive")
         library_menu = self.menuBar().addMenu("Library")
+        self.export_action = library_menu.addAction("Export selected photos…", self.export_selected)
+        self.export_action.setEnabled(False)
         self.clear_locations_action = library_menu.addAction(
             "Clear indexed locations…", self.clear_locations
         )
@@ -166,6 +194,8 @@ class Window(QMainWindow):
         self.rename_button = self.button(filters, "Name person", self.rename_person)
         self.merge_button = self.button(filters, "Merge person", self.merge_person)
         self.grid = QListWidget()
+        self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.grid.itemSelectionChanged.connect(self.update_export_action)
         self.grid.setViewMode(QListView.ViewMode.IconMode)
         self.grid.setResizeMode(QListView.ResizeMode.Adjust)
         self.grid.setMovement(QListView.Movement.Static)
@@ -309,6 +339,7 @@ class Window(QMainWindow):
                 tip += f"\nApproximate location: {photo['location_area']}"
             item.setToolTip(tip)
             item.setData(ID_ROLE, (photo["id"], str(path)))
+            item.setData(ID_ROLE + 1, (photo["mtime"], photo["size"]))
             self.grid.addItem(item)
         self.next_cursor = None
         if len(photos) > PAGE_SIZE:
@@ -316,6 +347,74 @@ class Window(QMainWindow):
             self.next_cursor = (last["captured_on"], last["id"]) if month else last["id"]
         self.previous_page.setEnabled(len(self.pages) > 1)
         self.next_page.setEnabled(self.next_cursor is not None)
+
+    def update_export_action(self):
+        self.export_action.setEnabled(
+            bool(self.grid.selectedItems()) and self.worker is None and self.export_worker is None
+        )
+
+    def export_selected(self):
+        if self.worker is not None or self.export_worker is not None:
+            return
+        photos = [
+            ExportPhoto(Path(item.data(ID_ROLE)[1]), *item.data(ID_ROLE + 1))
+            for item in self.grid.selectedItems()
+        ]
+        if not photos:
+            return
+        chosen = QFileDialog.getExistingDirectory(self, "Choose a folder for exported copies")
+        if not chosen:
+            return
+        try:
+            destination = Path(chosen).resolve(strict=True)
+            if destination.is_relative_to(self.library.directory.resolve()):
+                raise ValueError("Choose a destination outside FaceArchive’s data folder.")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Cannot export photos", str(error))
+            return
+        worker = ExportThread(photos, destination, self)
+        self.export_worker = worker
+        progress = QProgressDialog("Copying selected photos…", "Cancel", 0, len(photos), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(worker.cancelled.set)
+        worker.progress.connect(progress.setValue)
+        worker.completed.connect(self.show_export_result)
+        worker.finished.connect(self.export_finished)
+        self.export_progress = progress
+        self.update_export_action()
+        progress.show()
+        worker.start()
+
+    def show_export_result(self, result, error):
+        self.export_progress.hide()
+        if error:
+            QMessageBox.warning(self, "Cannot export photos", error)
+            return
+        state = "Export cancelled" if result.cancelled else "Export complete"
+        summary = f"{state} · {result.copied} copied · {len(result.failures)} failed"
+        if result.directory is not None:
+            summary += f" · {result.directory}"
+        self.statusBar().showMessage(summary)
+        if result.failures:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(state)
+            dialog.resize(690, 360)
+            layout = QVBoxLayout(dialog)
+            report = QPlainTextEdit("\n\n".join((summary, *result.failures)))
+            report.setReadOnly(True)
+            layout.addWidget(report)
+            self.button(layout, "Close", dialog.accept)
+            dialog.exec()
+
+    def export_finished(self):
+        self.export_progress.deleteLater()
+        self.export_progress = None
+        self.export_worker.deleteLater()
+        self.export_worker = None
+        self.update_export_action()
 
     def add_folder(self):
         chosen = QFileDialog.getExistingDirectory(self, "Add photo folder")
@@ -347,7 +446,7 @@ class Window(QMainWindow):
         )
 
     def start_scan(self):
-        if self.worker is not None:
+        if self.worker is not None or self.export_worker is not None:
             return
         self.worker = ScanThread(
             self.library,
@@ -357,6 +456,7 @@ class Window(QMainWindow):
             locations=self.index_locations.isChecked(),
         )
         self.worker.duplicate_update.connect(self.show_hash_progress)
+        self.update_export_action()
         self.worker.update.connect(self.show_progress)
         self.worker.result.connect(self.show_result)
         self.worker.finished.connect(self.scan_finished)
@@ -403,6 +503,7 @@ class Window(QMainWindow):
     def scan_finished(self):
         self.worker.deleteLater()
         self.worker = None
+        self.update_export_action()
         self.stop.setEnabled(False)
         self.add.setEnabled(True)
         self.scan_button.setEnabled(True)
@@ -622,6 +723,10 @@ class Window(QMainWindow):
         dialog.exec()
 
     def closeEvent(self, event):
+        if self.export_worker is not None:
+            self.export_worker.cancelled.set()
+            event.ignore()
+            return
         if self.worker is not None:
             self.cancel_scan()
             self.statusBar().showMessage("Stopping scan. Close the window when it finishes.")

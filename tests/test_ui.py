@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QInputDialog,
     QLabel,
     QMessageBox,
@@ -271,4 +272,34 @@ def test_smart_album_reopens_filters_and_shows_new_matches(tmp_path, monkeypatch
     window.delete_album_action.trigger()
     assert not library.smart_albums()
     assert window.grid.count() == 0
+    window.close()
+
+
+def test_export_selected_through_library_menu(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    library = Library(tmp_path / "data")
+    source, destination = tmp_path / "photos", tmp_path / "export"
+    source.mkdir()
+    destination.mkdir()
+    library.add_folder(source)
+    for name in ("first.jpg", "second.jpg", "third.jpg"):
+        write_photo(source / name)
+    run_scan(library)
+    window = Window(library)
+    assert not window.export_action.isEnabled()
+    for index in range(2):
+        window.grid.item(index).setSelected(True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(destination))
+    window.export_action.trigger()
+    loop = QEventLoop()
+    window.export_worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    app.processEvents()
+
+    assert window.export_worker is None
+    assert "2 copied" in window.statusBar().currentMessage()
+    copied = {path.name: path.read_bytes() for path in destination.glob("*/*.jpg")}
+    assert copied == {name: (source / name).read_bytes() for name in ("second.jpg", "third.jpg")}
     window.close()
